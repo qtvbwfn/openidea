@@ -7,6 +7,8 @@ import { Fragment, useState, type ReactNode } from "react";
 import { create } from "zustand";
 import type { RunConfig } from "@/platform/ipc";
 import { Checkbox, Dialog } from "@/ui";
+import { kindLabel } from "./configs";
+import { tx } from "@/platform/i18n";
 import styles from "./RunServices.module.css";
 
 interface Entry {
@@ -29,7 +31,11 @@ export function ServiceImportHost() {
 }
 
 /** The configurations of `kind` to show; `null` when the dialog was cancelled. */
-export function pickServices(configs: readonly RunConfig[], shown: ReadonlySet<string>): Promise<Set<string> | null> {
+export function pickServices(
+  kind: string,
+  configs: readonly RunConfig[],
+  shown: ReadonlySet<string>,
+): Promise<Set<string> | null> {
   return new Promise((resolve) => {
     const id = ++seq;
     const close = () => useDialogs.setState((s) => ({ stack: s.stack.filter((e) => e.id !== id) }));
@@ -40,6 +46,7 @@ export function pickServices(configs: readonly RunConfig[], shown: ReadonlySet<s
           id,
           node: (
             <ImportDialog
+              kind={kind}
               configs={configs}
               shown={shown}
               onDone={(picked) => {
@@ -54,8 +61,8 @@ export function pickServices(configs: readonly RunConfig[], shown: ReadonlySet<s
   });
 }
 
-/** A checkbox list of the kind's configurations; OK returns the picked set, Cancel/Escape null. */
 function ImportDialog(props: {
+  kind: string;
   configs: readonly RunConfig[];
   shown: ReadonlySet<string>;
   onDone: (picked: Set<string> | null) => void;
@@ -71,7 +78,7 @@ function ImportDialog(props: {
   return (
     <Dialog
       open
-      title="Add Service"
+      title={tx`Add Service (${kindLabel(props.kind)})`}
       onClose={() => props.onDone(null)}
       width={420}
       buttons={[
