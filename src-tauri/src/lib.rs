@@ -14,6 +14,7 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
 mod menu;
+pub mod paths;
 mod plugin_web;
 mod remote_dev;
 
@@ -54,14 +55,41 @@ pub fn run() {
     let context = tauri::generate_context!();
     #[cfg(debug_assertions)]
     let context = dev::configure(context);
-    logging::init(&context.config().identifier);
+    // Resolve where config and data live before anything reads them: the
+    // identifier is final here (dev builds replaced it per worktree), so the
+    // platform defaults — and the pointer file anchored in them — are the
+    // worktree's own. OPENIDEA_HOME or a recorded pointer redirects them.
+    paths::init(&context.config().identifier);
+    let resolved = paths::current();
+    let identifier = &context.config().identifier;
 
-    let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
+    // The per-consumer roots (logs, login-shell cache, managed tools) come
+    // from `paths`, never from the platform dirs directly: that is what
+    // keeps every read and write on the resolved location.
+    let log_dir = paths::log_dir(&resolved.layout, identifier);
+    logging::init(log_dir.as_deref());
+
+    let cache_root = paths::login_cache_root(&resolved.layout, &resolved.locations, identifier);
+    let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&cache_root);
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
-    if let Some(data) = dirs::data_local_dir() {
-        ide_tools::extend_process_path(&data.join(&context.config().identifier));
-        ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&data.join(&context.config().identifier)));
-        ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&data.join(&context.config().identifier)));
+    match &resolved.layout {
+        paths::Layout::Custom(_) => {
+            // Everything hangs off the chosen base; tools stay at its top
+            // level, so pointing a build at another's base shares its tools.
+            let base = paths::tools_home(&resolved.layout, identifier).expect("a custom base has a tools home");
+            ide_tools::set_tools_home(base.clone());
+            ide_tools::extend_process_path(&base);
+            ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&base));
+            ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&base));
+        }
+        paths::Layout::Default => {
+            // As before: managed tools under the app data dir.
+            if let Some(root) = paths::tools_home(&resolved.layout, identifier) {
+                ide_tools::extend_process_path(&root);
+                ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&root));
+                ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&root));
+            }
+        }
     }
     if let Some(refresh) = refresh_shell_path {
         refresh();

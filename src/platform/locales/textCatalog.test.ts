@@ -74,8 +74,19 @@ const UNCHECKED_FILES = new Set([
   "src/features/templates/postfix/model.ts",
 ]);
 
-/** Entries for text the code assembles from parts, which no literal spells out. */
-const BUILT_AT_RUNTIME = new Set<string>([]);
+/**
+ * Entries for text the code assembles from parts, which no literal spells out.
+ * `services/store.ts` derives the success/failure titles of streaming tasks from the
+ * running task's title (the `…` stripped, and `" failed"` appended to it).
+ */
+const BUILT_AT_RUNTIME = new Set<string>([
+  "Pulling {name}",
+  "Pulling {name} failed",
+  "Pruning {name}",
+  "Pruning {name} failed",
+  "Compose {op} {name}",
+  "Compose {op} {name} failed",
+]);
 
 /** Text that stays as written in every locale: names, code, formats, shortcuts. */
 const UNTRANSLATED = new Set<string>([
@@ -144,6 +155,7 @@ const UNTRANSLATED = new Set<string>([
   "Markdown",
   "Maven",
   "MySQL",
+  "MyBatis",
   "Neon",
   "Node.js",
   "PHP",
@@ -190,6 +202,7 @@ const UNTRANSLATED = new Set<string>([
   "JDK 1.4.x",
   "JDK 5 - 8",
   "LTS",
+  "MyBatis SQL",
   "NULL",
   "ORDER BY",
   "SDK",

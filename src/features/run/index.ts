@@ -41,6 +41,7 @@ import { invalidateGoModules } from "./goModules";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
 import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services";
+import { ServiceImportHost } from "./serviceImport";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
@@ -100,11 +101,11 @@ async function runSelected() {
   await startRun(config);
 }
 
-async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
+async function debugConfig(config: RunConfig, chain: readonly string[] = [], origin?: "services") {
   if (config.kind === "compound") {
     if (!(await prepareLaunch(config, chain))) return;
     const children = compoundChildren(config, useRun.getState().configs);
-    await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id])));
+    await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id], origin)));
     return;
   }
   if (remoteDebugBlocked(config)) return;
@@ -112,13 +113,13 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
   recordRun(config.id);
   // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
   if (isDebugOnly(config) && getAction("debug.startConfig")) {
-    await executeAction("debug.startConfig", config);
+    await executeAction("debug.startConfig", { config, services: origin === "services" });
     return;
   }
   // A single compiled file (rustc / clang): build with debug info, then debug the binary.
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
-    await launchProduced(compiled, true);
+    await launchProduced(compiled, true, origin === "services");
     return;
   }
   // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.
@@ -129,11 +130,11 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
   }
   // Maven / Gradle: the build tool starts the JVM with a debug agent, the debugger attaches.
   if (jdwpLaunch(config) && getAction("debug.attach")) {
-    await debugWithAgent(config);
+    await debugWithAgent(config, origin);
     return;
   }
   if (getAction("debug.startConfig")) {
-    await executeAction("debug.startConfig", config);
+    await executeAction("debug.startConfig", { config, services: origin === "services" });
     return;
   }
   notifications().notify({
@@ -291,6 +292,7 @@ export function activate(): () => void {
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({ id: "run.editConfigs", component: EditConfigsOverlay }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
+    registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
     registerServiceProvider(runServiceProvider),
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
@@ -453,7 +455,12 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
-          if (config) await debugConfig(config);
+          // Services passes `{ config, origin: "services" }` to keep the launch inside the window.
+          const origin =
+            arg && typeof arg === "object" && "origin" in arg && (arg as { origin?: unknown }).origin === "services"
+              ? "services"
+              : undefined;
+          if (config) await debugConfig(config, [], origin);
         },
       },
       {

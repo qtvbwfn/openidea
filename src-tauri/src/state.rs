@@ -5,7 +5,7 @@ use ide_workspace::RecentProjects;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 pub use ide_host::{Host, Project};
 
@@ -14,6 +14,9 @@ pub use ide_host::{Host, Project};
 pub struct AppState {
     pub app: AppHandle,
     pub host: Arc<Host>,
+    /// Whether this start found the resolved location without app data: a
+    /// migration chosen during this run may replace the files the boot wrote.
+    pub(crate) fresh_target: bool,
     pub startup: Startup,
     pub recent: RecentProjects,
     /// Plugins (`ide_host::plugins`), shared by all windows.
@@ -62,9 +65,18 @@ impl AppState {
                 syntax.get_or_init(|| Arc::new(Syntax::new()));
             })?;
         }
-        let config_dir = app.path().app_config_dir()?;
-        let data_dir = app.path().app_data_dir()?;
-        let local_data_dir = app.path().app_local_data_dir()?;
+        // The resolved location: the platform dirs by default, a user-chosen
+        // base's config/ and system/ otherwise (`crate::paths`). A previous
+        // location's files are NOT folded in here — the migration dialog
+        // asks first (see `commands::app::migration_*`); this start only
+        // records whether the location had no app data, so a migration
+        // chosen moments later knows its own fresh files may be replaced.
+        let resolved = crate::paths::current();
+        let fresh_target = !crate::paths::layout_has_data(&resolved.layout, &resolved.defaults);
+        let config_dir = resolved.locations.config.clone();
+        let data_dir = resolved.locations.data.clone();
+        // Machine-local caches (upstream's `app_local_data_dir`) follow the same layout.
+        let local_data_dir = crate::paths::local_data_dir(&resolved.layout, &resolved.defaults);
         std::fs::create_dir_all(&config_dir)?;
         std::fs::create_dir_all(&data_dir)?;
         if let Err(error) = std::fs::create_dir_all(&local_data_dir) {
@@ -96,10 +108,17 @@ impl AppState {
             project_environment: false,
         }));
         Ok(Self {
+            fresh_target,
             recent: RecentProjects::load(&config_dir),
             askpass: start_askpass(&app),
             sink: global_sink,
-            plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,
+            // Plugins are user-chosen installs: on the config side of a custom
+            // base, beside the data in the default layout (`crate::paths`).
+            plugins: crate::commands::plugin::create_host(
+                &app,
+                &crate::paths::plugins_dir(&resolved.layout, &resolved.locations),
+                &host,
+            )?,
             web: ide_web::WebServer::new(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,

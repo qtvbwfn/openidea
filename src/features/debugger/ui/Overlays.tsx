@@ -262,7 +262,7 @@ function BreakpointFields({
 }
 
 function specialTitle(b: SpecialBreakpoint): string {
-  return b.kind === "method" ? b.name || "(no method)" : b.label;
+  return b.kind === "method" ? b.name || tx("(no method)") : b.label;
 }
 
 /** Properties popover of a method breakpoint / field watchpoint (right-click on its gutter icon). */
@@ -366,13 +366,13 @@ function BreakpointsDialog() {
     const section = (label: string, list: DialogRow[]) => {
       if (list.length) out.push({ type: "section", key: `section:${label}`, label }, ...list);
     };
-    section("Line Breakpoints", lines);
+    section(tx("Line Breakpoints"), lines);
     section(
-      "Method Breakpoints",
+      tx("Method Breakpoints"),
       methods.map((bp) => ({ type: "special" as const, key: bp.id, bp })),
     );
     section(
-      "Field Watchpoints",
+      tx("Field Watchpoints"),
       fields.map((bp) => ({ type: "special" as const, key: bp.id, bp })),
     );
     return out;
@@ -490,7 +490,9 @@ function BreakpointsDialog() {
                     {basename(r.path)}:{r.bp.line + 1}
                   </span>
                   <span className={styles.bpDir}>{relativePath(root, r.path)}</span>
-                  {isConditional(r.bp) && <span className={styles.bpCond}>{suspends(r.bp) ? "if" : "log"}</span>}
+                  {isConditional(r.bp) && (
+                    <span className={styles.bpCond}>{suspends(r.bp) ? tx("if") : tx("log")}</span>
+                  )}
                   {r.bp.temporary && (
                     <span className={styles.bpCond}>
                       <T>temp</T>
@@ -537,7 +539,7 @@ function ExceptionBreakpoints({ open }: { open: boolean }) {
             key={g.adapter}
             className={styles.exceptionGroup}
             role="group"
-            aria-label={`${g.adapter} exception filters`}
+            aria-label={tx`${g.adapter} exception filters`}
           >
             {groups.length > 1 && <div className={styles.exceptionAdapter}>{g.adapter}</div>}
             {g.filters.map((f) => (
@@ -573,7 +575,9 @@ function BreakpointDetail({ row, onGo }: { row: BpRow; onGo: () => void }) {
           <T>Remove</T>
         </Button>
       </div>
-      {st && <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? "Not verified")}</div>}
+      {st && (
+        <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? tx("Not verified"))}</div>
+      )}
       <BreakpointFields path={path} bp={bp} />
       <Checkbox
         checked={!!bp.temporary}
@@ -604,7 +608,9 @@ function SpecialDetail({ bp, onGo }: { bp: SpecialBreakpoint; onGo: () => void }
           <T>Remove</T>
         </Button>
       </div>
-      {st && <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? "Not verified")}</div>}
+      {st && (
+        <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? tx("Not verified"))}</div>
+      )}
       <Checkbox checked={bp.enabled} onChange={(enabled) => updateSpecial(bp.id, { enabled })} label="Enabled" />
       {bp.kind === "method" ? (
         <label className={styles.field}>
