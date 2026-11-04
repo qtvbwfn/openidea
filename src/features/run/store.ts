@@ -116,6 +116,8 @@ interface RunState {
   temporary: string[];
   /** Ids of configurations pinned to the top of the chooser, in pin order. */
   pinned: string[];
+  /** Ids of the configurations started last, newest first (at most `MAX_RECENT`). */
+  recent: string[];
   sessions: RunSession[];
   activeSession: string | null;
   /** Output version per session (re-render trigger for the console). */
@@ -142,6 +144,7 @@ export const useRun = create<RunState>(() => ({
   selectedId: null,
   temporary: [],
   pinned: [],
+  recent: [],
   sessions: [],
   activeSession: null,
   versions: {},
@@ -197,7 +200,10 @@ export async function loadConfigs(): Promise<void> {
     const saved = await call(commands.runConfigs());
     if (useProject.getState().project?.root !== root) return;
     // Temporary configs survive reloads (and restarts) until saved or evicted; a saved one wins.
-    const temps = readTemporary(root).filter((t) => !saved.some((c) => c.id === t.id));
+    // They are kept without what settings derived: today's toolchains apply to them, as to the others.
+    const kept = readTemporary(root).filter((t) => !saved.some((c) => c.id === t.id));
+    const temps = kept.length ? await call(commands.runApplySettings(kept)).catch(() => kept) : kept;
+    if (useProject.getState().project?.root !== root) return;
     const configs = [...saved, ...temps];
     const stored = useRun.getState().selectedId ?? readSelected(root);
     const selectedId =
@@ -207,7 +213,8 @@ export async function loadConfigs(): Promise<void> {
     useRun.setState({
       configs,
       temporary: temps.map((t) => t.id),
-      pinned: readPinned(root),
+      pinned: readIds(PINNED_KEY, root),
+      recent: readIds(RECENT_KEY, root),
       loaded: true,
       loadError: null,
       selectedId,
@@ -237,13 +244,26 @@ export function selectConfig(id: string | null) {
 }
 
 const PINNED_KEY = "openidea.run.pinned:";
+const RECENT_KEY = "openidea.run.recent:";
+export const MAX_RECENT = 5;
 
-function readPinned(root: string): string[] {
+function readIds(key: string, root: string): string[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(PINNED_KEY + root) ?? "[]") as unknown;
+    const raw = JSON.parse(localStorage.getItem(key + root) ?? "[]") as unknown;
     return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : [];
   } catch {
     return [];
+  }
+}
+
+function writeIds(key: string, ids: readonly string[]) {
+  const root = useProject.getState().project?.root;
+  if (!root) return;
+  try {
+    if (ids.length) localStorage.setItem(key + root, JSON.stringify(ids));
+    else localStorage.removeItem(key + root);
+  } catch {
+    /* storage unavailable */
   }
 }
 
@@ -252,14 +272,36 @@ export function togglePinned(id: string) {
   const { pinned } = useRun.getState();
   const next = pinned.includes(id) ? pinned.filter((p) => p !== id) : [...pinned, id];
   useRun.setState({ pinned: next });
-  const root = useProject.getState().project?.root;
-  if (!root) return;
-  try {
-    if (next.length) localStorage.setItem(PINNED_KEY + root, JSON.stringify(next));
-    else localStorage.removeItem(PINNED_KEY + root);
-  } catch {
-    /* storage unavailable */
-  }
+  writeIds(PINNED_KEY, next);
+}
+
+/** A configuration was started: it leads the chooser's recent configurations. Kept per project. */
+export function markRecent(id: string) {
+  const { recent } = useRun.getState();
+  if (id === CURRENT_FILE || recent[0] === id) return;
+  const next = [id, ...recent.filter((r) => r !== id)].slice(0, MAX_RECENT);
+  useRun.setState({ recent: next });
+  writeIds(RECENT_KEY, next);
+}
+
+/** Marks every configuration whose run or debug session starts (any executor, reruns included). */
+export function trackRecentConfigurations(): () => void {
+  const offRun = useRun.subscribe((s, prev) => {
+    if (s.sessions === prev.sessions) return;
+    for (const x of s.sessions) {
+      if (!prev.sessions.some((p) => p.id === x.id && p.startedAt === x.startedAt)) markRecent(x.config.id);
+    }
+  });
+  const offDebug = useDebugRunSessions.subscribe((s, prev) => {
+    if (s.sessions === prev.sessions) return;
+    for (const x of s.sessions) {
+      if (x.configId && !prev.sessions.some((p) => p.id === x.id)) markRecent(x.configId);
+    }
+  });
+  return () => {
+    offRun();
+    offDebug();
+  };
 }
 
 /** Whether the chooser's "Current File" is selected. */
@@ -275,7 +317,8 @@ export function selectedConfig(): RunConfig | undefined {
 // ---------------------------------------------------------------------------
 // Temporary configurations (IDEA: created by gutter / context runs, at most 5)
 
-const TEMPORARY_KEY = "openidea.run.temporary:";
+// v2: kept without settings-derived values (earlier entries froze the toolchain they were made with).
+const TEMPORARY_KEY = "openidea.run.temporary.v2:";
 export const MAX_TEMPORARY = 5;
 
 function readTemporary(root: string): RunConfig[] {
@@ -298,14 +341,24 @@ function writeTemporary(root: string, configs: RunConfig[]) {
   }
 }
 
+let persisting = 0;
+
 export function persistTemporary() {
   const root = useProject.getState().project?.root;
   if (!root) return;
   const { configs, temporary } = useRun.getState();
-  writeTemporary(
-    root,
-    temporary.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c),
-  );
+  const list = temporary.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c);
+  writeTemporary(root, list);
+  // A rewrite still pending from an earlier call must not bring back what was removed since.
+  const generation = ++persisting;
+  if (!list.length || !isTauri()) return;
+  // Then rewritten without what settings derived (the project's Maven, JDK, interpreter…), so a
+  // later settings change reaches them as it does detected and saved configurations.
+  void call(commands.runWithoutDerived(list))
+    .then((kept) => {
+      if (generation === persisting && useProject.getState().project?.root === root) writeTemporary(root, kept);
+    })
+    .catch(() => {});
 }
 
 /** IDEA's `isConfigurationFromContext` for an Application: the same main class of the same module. */
@@ -379,6 +432,30 @@ export async function deleteConfig(id: string): Promise<void> {
   await saveUserConfigs(
     configs.filter((c) => !c.detected && !temporary.includes(c.id) && c.id !== id),
     configs.find((c) => c.id === id)?.detected ? [id] : [],
+  );
+}
+
+/**
+ * Edit Configurations' OK / Apply. A temporary configuration stays temporary unless it was edited
+ * there (then it is saved, as IDEA makes it permanent), and one removed there is forgotten.
+ */
+export async function saveEditedConfigs(draft: readonly RunConfig[], removedDetectedIds: string[] = []): Promise<void> {
+  const { configs, temporary } = useRun.getState();
+  const unchanged = (c: RunConfig) => {
+    const before = configs.find((o) => o.id === c.id);
+    return !!before && JSON.stringify(before) === JSON.stringify(c);
+  };
+  const kept = temporary.filter((id) => draft.some((c) => c.id === id && unchanged(c)));
+  if (kept.length !== temporary.length) {
+    useRun.setState({
+      configs: configs.filter((c) => !temporary.includes(c.id) || kept.includes(c.id)),
+      temporary: kept,
+    });
+    persistTemporary();
+  }
+  await saveUserConfigs(
+    draft.filter((c) => !c.detected && !kept.includes(c.id)),
+    removedDetectedIds,
   );
 }
 
@@ -1161,6 +1238,7 @@ export function resetRuns() {
     selectedId: null,
     temporary: [],
     pinned: [],
+    recent: [],
     sessions: [],
     activeSession: null,
     versions: {},

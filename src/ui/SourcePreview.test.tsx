@@ -56,6 +56,20 @@ describe("SourcePreview", () => {
     expect(firstTok(container)).toBeNull();
   });
 
+  it("renders the loaded lines around the current one", async () => {
+    const { container } = render(
+      <SourcePreview
+        path="/p/a.ts"
+        line={1}
+        load={loadOf("one\ntwo\nthree")}
+        highlights={[{ line: 1, ranges: [[0, 3]] }]}
+      />,
+    );
+    await screen.findByText("two");
+    expect(container.querySelector('[data-line="1"] mark')?.textContent).toBe("two");
+    expect(container.querySelector('[data-line="0"]')?.textContent).toContain("one");
+  });
+
   it("makes its text selectable as a selection boundary", async () => {
     const { container } = render(<SourcePreview path="/p/a.ts" line={0} load={loadOf("// TODO")} />);
     await screen.findByText("// TODO");

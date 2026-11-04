@@ -91,7 +91,7 @@ export function runToLine(path: string, line: number) {
   const t = pausedTarget();
   if (t && breakpointPathAllowed(path))
     void report(
-      "Run to Cursor failed",
+      tx("Run to Cursor failed"),
       resumeExecution(t.s.id, () => call(commands.debugRunTo(t.s.id, t.thread, path, line, false))),
     );
 }
@@ -347,7 +347,7 @@ export function registerDebugActions(): () => void {
       category: "Debug",
       icon: "debug",
       description: "Start debugging a run configuration",
-      run: ({ arg }) => report("Cannot start debugging", startConfig(arg)),
+      run: ({ arg }) => report(tx("Cannot start debugging"), startConfig(arg)),
     },
     {
       id: "debug.attach",
@@ -358,7 +358,7 @@ export function registerDebugActions(): () => void {
         "Attach the Java debugger to a JVM listening for JDWP (arg: { name, module, hostName, port, process })",
       run: ({ arg }) =>
         report(
-          "Cannot attach the debugger",
+          tx("Cannot attach the debugger"),
           (async () => {
             const root = useProject.getState().project?.root;
             if (!root || !isJavaAttachTarget(arg)) return;
@@ -424,7 +424,7 @@ export function registerDebugActions(): () => void {
         const t = pausedTarget();
         if (t)
           void report(
-            "Resume failed",
+            tx("Resume failed"),
             resumeExecution(t.s.id, () => call(commands.debugResume(t.s.id, t.thread))),
           );
       },
@@ -443,7 +443,7 @@ export function registerDebugActions(): () => void {
           const threads = await call(commands.debugThreads(s.id)).catch(() => []);
           thread = threads[0]?.id ?? 0;
         }
-        await report("Pause failed", call(commands.debugPause(s.id, thread)));
+        await report(tx("Pause failed"), call(commands.debugPause(s.id, thread)));
       },
     },
     step("debug.stepOver", "Step Over", "over", "step-over"),
@@ -460,7 +460,7 @@ export function registerDebugActions(): () => void {
         const t = pausedTarget();
         if (t)
           void report(
-            "Force Step Over failed",
+            tx("Force Step Over failed"),
             resumeExecution(t.s.id, () => call(commands.debugForceStepOver(t.s.id, t.thread))),
           );
       },
@@ -477,7 +477,7 @@ export function registerDebugActions(): () => void {
         const t = pausedTarget();
         if (t)
           void report(
-            "Force Step Into failed",
+            tx("Force Step Into failed"),
             resumeExecution(t.s.id, () => call(commands.debugStep(t.s.id, t.thread, "into"))),
           );
       },
@@ -489,7 +489,7 @@ export function registerDebugActions(): () => void {
       icon: "smart-step-into",
       description: "Choose which call on the current line to step into",
       when: paused,
-      run: () => void report("Smart Step Into failed", smartStepInto()),
+      run: () => void report(tx("Smart Step Into failed"), smartStepInto()),
     },
     {
       id: "debug.showExecutionPoint",
@@ -519,7 +519,7 @@ export function registerDebugActions(): () => void {
           return;
         }
         void report(
-          "Reset Frame failed",
+          tx("Reset Frame failed"),
           resumeExecution(t.s.id, () => call(commands.debugRestartFrame(t.s.id, frame.id))),
         );
       },
@@ -569,7 +569,7 @@ export function registerDebugActions(): () => void {
         const c = cursor();
         if (t && c && breakpointPathAllowed(c.path))
           void report(
-            "Run to Cursor failed",
+            tx("Run to Cursor failed"),
             resumeExecution(t.s.id, () => call(commands.debugRunTo(t.s.id, t.thread, c.path, c.line, false))),
           );
       },
@@ -586,7 +586,7 @@ export function registerDebugActions(): () => void {
         const c = cursor();
         if (t && c && breakpointPathAllowed(c.path))
           void report(
-            "Force Run to Cursor failed",
+            tx("Force Run to Cursor failed"),
             resumeExecution(t.s.id, () => call(commands.debugRunTo(t.s.id, t.thread, c.path, c.line, true))),
           );
       },

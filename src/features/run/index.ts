@@ -72,6 +72,7 @@ import {
   selectedConfig,
   startRun,
   stopSession,
+  trackRecentConfigurations,
   useRun,
 } from "./store";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
@@ -298,6 +299,7 @@ export function activate(): () => void {
     registerExternalTools(),
     activateStackTrace(),
     listenForApplicationDeactivation(),
+    trackRecentConfigurations(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
     // A removed workspace member (or a closed project) takes its sessions,
     // temporary configurations and Services groups with it.

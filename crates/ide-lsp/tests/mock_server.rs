@@ -406,6 +406,107 @@ async fn linked_projects_initialize_separate_language_server_roots() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn files_changed_on_disk_reach_the_servers_of_their_language() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let (created, modified, removed) = (h.root.join("new.mk"), h.root.join("a.mk"), h.root.join("old.mk"));
+    // Other languages and files outside the server's root are left out.
+    let other = h.root.join("notes.txt");
+    let outside = tempfile::tempdir().unwrap().path().join("far.mk");
+    h.mgr.watched_files_changed(
+        &[created.clone(), other],
+        &[modified.clone(), outside],
+        std::slice::from_ref(&removed),
+        &[h.root.join(".venv/lib/site-packages")],
+    );
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([
+            { "uri": uri_of(&created), "type": 1 },
+            { "uri": uri_of(&modified), "type": 2 },
+            { "uri": uri_of(&removed), "type": 3 },
+        ])
+    );
+    // Nothing of its languages: no notification.
+    h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[], &[]);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+/// A server that registers file watchers hears of what they match, inside excluded folders
+/// too (`uv add` into `.venv`, `go get` rewriting `go.mod`); folders outside the project
+/// that relative patterns name are reported for watching; unregistered, it falls back to
+/// its languages' files.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_file_watchers_choose_the_changes_a_server_hears_of() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let roots = Arc::new(Mutex::new(Vec::<Vec<PathBuf>>::new()));
+    {
+        let roots = roots.clone();
+        h.mgr.set_file_watch_roots_hook(Box::new(move |r| roots.lock().push(r)));
+    }
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let outside = tempfile::tempdir().unwrap();
+    let outside = dunce::canonicalize(outside.path()).unwrap();
+    let external = outside.join("venv/lib/site-packages");
+    s.peer()
+        .request::<_, Value>(
+            "client/registerCapability",
+            json!({ "registrations": [{ "id": "w", "method": "workspace/didChangeWatchedFiles", "registerOptions": { "watchers": [
+                { "globPattern": "**/*.{mk,mod}" },
+                { "globPattern": "**/pyrightconfig.json", "kind": 2 },
+                { "globPattern": "**/site-packages/**" },
+                { "globPattern": { "baseUri": uri_of(&external), "pattern": "**" } },
+                { "globPattern": { "baseUri": uri_of(&h.root.join("sub")), "pattern": "**" } },
+            ] } }] }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(roots.lock().last(), Some(&vec![external.clone()]), "only folders outside the project");
+
+    let sp = h.root.join(".venv/lib/python3.14/site-packages");
+    let notified = || s.notified("workspace/didChangeWatchedFiles");
+    h.mgr.watched_files_changed(
+        &[h.root.join("go.mod"), h.root.join("notes.txt"), h.root.join("pyrightconfig.json")],
+        &[h.root.join("pyrightconfig.json"), external.join("idna/core.py")],
+        &[h.root.join("old.mk")],
+        &[sp.join("idna"), h.root.join("node_modules/x")],
+    );
+    eventually(|| !notified().is_empty()).await;
+    assert_eq!(
+        notified()[0]["changes"],
+        json!([
+            { "uri": uri_of(&h.root.join("go.mod")), "type": 1 },
+            { "uri": uri_of(&h.root.join("pyrightconfig.json")), "type": 2 },
+            { "uri": uri_of(&external.join("idna/core.py")), "type": 2 },
+            { "uri": uri_of(&h.root.join("old.mk")), "type": 3 },
+            { "uri": uri_of(&sp.join("idna")), "type": 1 },
+        ])
+    );
+
+    s.peer()
+        .request::<_, Value>(
+            "client/unregisterCapability",
+            json!({ "unregisterations": [{ "id": "w", "method": "workspace/didChangeWatchedFiles" }] }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(roots.lock().last(), Some(&vec![]));
+    h.mgr.watched_files_changed(&[h.root.join("go.mod"), h.root.join("b.mk")], &[], &[], &[sp.join("idna")]);
+    eventually(|| notified().len() == 2).await;
+    assert_eq!(notified()[1]["changes"], json!([{ "uri": uri_of(&h.root.join("b.mk")), "type": 1 }]));
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn initialize_and_incremental_sync() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "fn main() {\n}\n");
@@ -3306,4 +3407,91 @@ async fn jdtls_import_failure_names_reserved_device_files_on_windows() {
         assert!(failures.is_empty(), "{failures:?}");
     }
     let _ = std::fs::remove_file(&nul);
+}
+
+/// Pull Members Up / Push Members Down: the extension's answers, refusals and edits.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_hierarchy_refactorings_use_the_extension_commands() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] =
+        json!({"commands": ["openidea.java.hierarchy.members", "openidea.java.hierarchy.refactor"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    *s.responder.lock() = Some(Arc::new(|_, method, params| {
+        if method != "workspace/executeCommand" {
+            return None;
+        }
+        let args = params["arguments"].as_array().unwrap();
+        let uri = args[0].clone();
+        Some(match (params["command"].as_str().unwrap(), args[1].as_u64().unwrap()) {
+            (_, 9) => json!({"refused": "Type has no super types."}),
+            ("openidea.java.hierarchy.members", _) => json!({
+                "className": "Dog",
+                "targets": [{"id": "=p/src<{Animal.java[Animal", "name": "Animal", "qualifiedName": "Animal", "interface": false}],
+                "members": [{"id": "=p/src<{Dog.java[Dog~bark", "label": "bark() : String", "kind": "method", "selected": true, "abstractable": true}],
+            }),
+            _ => json!({
+                "problems": [{"severity": "warning", "message": "The visibility of field 'tail' will be changed to package."}],
+                "edit": {"changes": {uri.as_str().unwrap(): [
+                    {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}, "newText": "class"}
+                ]}},
+            }),
+        })
+    }));
+    let text =
+        format!("class Dog extends Animal {{ String bark() {{ return \"\"; }} }}{}class Lonely {{}}", "\n".repeat(9));
+    let (doc, path) = h.open("Dog.java", &text);
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let info =
+        h.mgr.hierarchy_members(doc, Pos::new(0, 35), HierarchyRefactoring::PullUp, Default::default()).await.unwrap();
+    assert_eq!(info.class_name, "Dog");
+    assert_eq!(info.targets[0].name, "Animal");
+    assert!(info.members[0].selected && info.members[0].abstractable);
+    assert_eq!(info.members[0].kind, HierarchyMemberKind::Method);
+    let sent = s.requested("workspace/executeCommand");
+    assert_eq!(sent[0]["arguments"], json!([uri_of(&path), 0, 35, "pullUp"]));
+
+    let choices = vec![HierarchyChoice { id: info.members[0].id.clone(), make_abstract: true }];
+    let done = h
+        .mgr
+        .hierarchy_refactor(
+            doc,
+            Pos::new(0, 35),
+            HierarchyRefactoring::PushDown,
+            Some(info.targets[0].id.clone()),
+            choices,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(done.problems[0].severity, ProblemSeverity::Warning);
+    let edit = done.edit.unwrap();
+    assert!(matches!(&edit.files[..], [FileEdit::Edit { path: p, edits, .. }] if p == &path && edits.len() == 1));
+    let sent = s.requested("workspace/executeCommand");
+    assert_eq!(
+        sent[1]["arguments"],
+        json!([uri_of(&path), 0, 35, "pushDown", "=p/src<{Animal.java[Animal",
+            [{"id": "=p/src<{Dog.java[Dog~bark", "abstract": true}]])
+    );
+
+    let refused = h.mgr.hierarchy_members(doc, Pos::new(9, 0), HierarchyRefactoring::PullUp, Default::default()).await;
+    let e = refused.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput);
+    assert_eq!(e.message, "Type has no super types.");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hierarchy_refactorings_name_the_servers_without_them() {
+    let h = harness(&[("plain", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "class A {}");
+    h.wait_status("plain", ServerStatus::Ready).await;
+    let e = h
+        .mgr
+        .hierarchy_members(doc, Pos::new(0, 6), HierarchyRefactoring::PullUp, Default::default())
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Unavailable);
+    assert_eq!(e.message, "plain doesn't support Pull Members Up");
 }
