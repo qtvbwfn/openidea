@@ -296,7 +296,7 @@ function writeTemporary(root: string, configs: RunConfig[]) {
   }
 }
 
-function persistTemporary() {
+export function persistTemporary() {
   const root = useProject.getState().project?.root;
   if (!root) return;
   const { configs, temporary } = useRun.getState();
