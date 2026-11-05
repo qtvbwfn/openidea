@@ -17,6 +17,8 @@
   <a href="#plugins">Plugins</a>
   &nbsp;·&nbsp;
   <a href="https://discord.gg/2Zy4yn7gP">Discord</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/qtvbwfn/openidea/blob/main/README.zh-CN.md">中文</a>
 </p>
 
 https://github.com/user-attachments/assets/234dd54c-1255-4b3a-b35c-533d78d737c0
