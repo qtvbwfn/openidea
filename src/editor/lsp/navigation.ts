@@ -133,8 +133,8 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
 }
 
 /** "Choose Implementation of foo (3 found)". */
-export function chooserTitle(kind: GotoKind, name: string | null, count: number, fromSyntax = false): string {
-  return `${TITLES[kind]}${name ? ` of ${name}` : ""} (${count} found${fromSyntax ? ", based on syntax" : ""})`;
+export function chooserTitle(kind: GotoKind, name: string | null, count: number, basis: string | null = null): string {
+  return `${TITLES[kind]}${name ? ` of ${name}` : ""} (${count} found${basis ? `, ${basis}` : ""})`;
 }
 
 /** Pin button of the targets chooser: the targets as a Find tool window tab (code-insight). */
@@ -173,6 +173,8 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   const pos = offsetToPos(view.state.doc, offset);
   let locs: DeclarationTarget[];
   let fromSyntax = false;
+  /** The fallback's own note (index vs syntax) for the post-navigation hint. */
+  let fallbackNote: string | null = null;
   const declaration = kind === "definition" || kind === "declaration";
   let serverDown = false;
   try {
@@ -196,8 +198,9 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
       reportLspError(view, e, true);
       return;
     }
-    locs = fb;
+    locs = fb.targets;
     fromSyntax = true;
+    fallbackNote = fb.note;
   }
   if (!locs.length) {
     // The server has no definition here: a link (`href`, `#include`, Markdown) or a file path.
@@ -230,7 +233,7 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
     if (fromSyntax)
       setTimeout(() => {
         const target = activeEditor()?.view;
-        if (target) showHint(target, SYNTAX_NOTE, { timeout: 2500 });
+        if (target) showHint(target, fallbackNote ?? SYNTAX_NOTE, { timeout: 2500 });
       }, 150);
     return;
   }
@@ -239,7 +242,12 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   openPopup({
     kind: "list",
     anchor: caretAnchor(view, offset),
-    title: chooserTitle(kind, name, locs.length, fromSyntax),
+    title: chooserTitle(
+      kind,
+      name,
+      locs.length,
+      fallbackNote ? "based on project index" : fromSyntax ? "based on syntax" : null,
+    ),
     items: await locationItems(locs),
     pin: pinToFind(name ?? "", locs),
   });
@@ -301,12 +309,16 @@ async function followReferenceAt(view: EditorView, doc: EditorDocContext, offset
 }
 
 /** Declaration targets from the structure service; null when it cannot answer for this file. */
-async function gotoFallback(view: EditorView, doc: EditorDocContext, pos: Pos): Promise<DeclarationTarget[] | null> {
+async function gotoFallback(
+  view: EditorView,
+  doc: EditorDocContext,
+  pos: Pos,
+): Promise<{ targets: DeclarationTarget[]; note: string | null } | null> {
   try {
     await whenSynced(view);
     const text = view.state.doc;
     const fb = await declarationFallback(doc, text, pos);
-    return fb.kind === "unsupported" ? null : fb.targets;
+    return fb.kind === "unsupported" ? null : { targets: fb.targets, note: fb.note ?? null };
   } catch (e) {
     console.debug("[syntax] declaration fallback", e);
     return null;
@@ -379,7 +391,7 @@ async function probeNavigation(view: EditorView, offset: number): Promise<{ info
       navigable = (await lspRequest(() => commands.lspGoto(doc.doc, pos, "definition"))).length > 0;
     } catch (e) {
       if (!isUnavailable(e)) throw e;
-      navigable = !!(await gotoFallback(view, doc, pos))?.length;
+      navigable = !!(await gotoFallback(view, doc, pos))?.targets.length;
     }
     if (!navigable && WEB_LANGUAGES.has(doc.language) && !doc.virtual)
       navigable = !!(await lspRequest(() => commands.webGoto(doc.doc, pos)).catch(() => null))?.targets.length;
@@ -402,9 +414,21 @@ const linkPlugin = ViewPlugin.fromClass(
     private probeTimer: ReturnType<typeof setTimeout> | undefined;
     constructor(readonly view: EditorView) {
       // Window-wide, so ⌘/Ctrl over an unfocused editor underlines too; released anywhere clears it.
-      this.off = onNavigationModifier((held) => {
+      const offModifier = onNavigationModifier((held) => {
         if (!held || this.last) this.show(held);
       });
+      // IDEA's macOS "Force touch" shortcut: a force click navigates like ⌘-click
+      // (the keyboard dispatcher keeps the system Look Up popover away).
+      const onForceDown = (e: Event) => {
+        const m = e as MouseEvent;
+        if (m.metaKey || m.ctrlKey || m.altKey || m.shiftKey) return;
+        if (navigateFromPointer(view, m)) m.preventDefault();
+      };
+      view.contentDOM.addEventListener("webkitmouseforcedown", onForceDown);
+      this.off = () => {
+        offModifier();
+        view.contentDOM.removeEventListener("webkitmouseforcedown", onForceDown);
+      };
     }
     destroy() {
       this.off();
@@ -530,17 +554,23 @@ const linkPlugin = ViewPlugin.fromClass(
         }
         // IDEA parity: middle button navigates on a plain click, without the modifier.
         if (e.button === 1 ? e.metaKey || e.ctrlKey || e.altKey || e.shiftKey : !isNavigationGesture(e)) return false;
-        const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
-        if (pos == null) return false;
+        if (!navigateFromPointer(view, e)) return false;
         e.preventDefault();
-        view.dispatch({ selection: EditorSelection.cursor(pos), effects: setLink.of(null) });
-        view.focus();
-        void gotoTargets(view, "definition", pos);
         return true;
       },
     },
   },
 );
+
+/** Puts the caret under the pointer and goes to the declaration there, like a ⌘/Ctrl-click. */
+function navigateFromPointer(view: EditorView, e: MouseEvent): boolean {
+  const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+  if (pos == null) return false;
+  view.dispatch({ selection: EditorSelection.cursor(pos), effects: setLink.of(null) });
+  view.focus();
+  void gotoTargets(view, "definition", pos);
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Document highlights

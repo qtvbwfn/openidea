@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod analysis;
+pub mod android;
 pub mod app;
 pub mod build;
 pub mod bytes;
@@ -45,8 +46,10 @@ pub mod tools;
 pub mod vcs;
 pub mod web;
 pub mod window;
+pub mod window_drag;
 pub mod window_group;
 pub mod workspace;
+pub mod wsl;
 
 use tauri_specta::collect_commands;
 
@@ -68,8 +71,12 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::migration_apply,
         app::migration_decline,
         app::app_info,
+        android::android_devices,
+        android::android_logcat,
         app::recent_projects,
         app::remove_recent_project,
+        app::recent_project_groups,
+        app::set_recent_project_groups,
         app::open_project,
         app::project_trust_status,
         app::project_trust_list,
@@ -200,6 +207,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::mark_recent,
         nav::recent_files,
         nav::remove_recent,
+        nav::index_goto,
         nav::web_goto,
         nav::fs_resolve_reference,
         nav::path_completions,
@@ -261,7 +269,6 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_open_external_log,
         vcs::vcs_log_details,
         vcs::vcs_log_details_batch,
-        vcs::vcs_log_index,
         vcs::vcs_revision_children,
         vcs::vcs_revision_files,
         vcs::vcs_commit_files,
@@ -309,6 +316,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_compare_scope,
         vcs::vcs_compare_paths,
         vcs::vcs_diff_revisions,
+        vcs::vcs_diff_numstat,
         vcs::vcs_merge_base,
         vcs::vcs_create_patch,
         vcs::vcs_patch_preview,
@@ -359,6 +367,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_tomcat_update,
         run::run_test_reports,
         build::build_model,
+        build::gradle_link_projects,
+        build::gradle_unlink_projects,
         build::build_sync,
         build::gradle_dependencies,
         build::gradle_published_catalog,
@@ -378,6 +388,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_completions,
         debug::debug_resume,
         debug::debug_pause,
+        debug::debug_hot_reload,
+        debug::debug_hot_restart,
         debug::debug_step,
         debug::debug_run_to,
         debug::debug_stop,
@@ -393,6 +405,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tools::jdk_download,
         sdk::sdk_detect,
         sdk::sdk_python_effective,
+        sdk::sdk_php_effective,
         sdk::sdk_php_language_level,
         sdk::sdk_project_libraries,
         sdk::sdk_locate_tools,
@@ -410,6 +423,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::window_cycle,
         window::window_toggle_fullscreen,
         window::window_set_titlebar_height,
+        window_drag::window_start_drag,
         window::window_take_launch,
         window::window_close_context,
         window::window_open_projects,
@@ -530,6 +544,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         db::db_set_ssh_secret,
         db::db_trust_ssh_host,
         ssh::ssh_test,
+        wsl::wsl_distros,
+        wsl::wsl_resolve,
         ssh::ssh_set_secret,
         ssh::ssh_needs_secret,
         ssh::ssh_trust_host,

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { GradleModel, MavenModel, MavenPlugin, MavenProject } from "@/platform/ipc";
+import type { GradleModel, MavenModel, MavenProject, RunConfig } from "@/platform/ipc";
 import {
   expandableKeys,
   goalCompletions,
   gradleChildren,
   gradleRoots,
+  gradleRunConfigs,
+  gradleProjectKey,
   gradleTaskConfig,
   isRunnable,
   mavenChildren,
@@ -15,7 +17,6 @@ import {
   parseGoalLine,
   parseTaskLine,
   profilesArg,
-  skippedTestRun,
   splitArgs,
   taskCompletions,
   type BuildNode,
@@ -105,7 +106,21 @@ const maven: MavenModel = {
   syncError: null,
 };
 
-const children = (n: BuildNode) => mavenChildren(n, maven) ?? [];
+const runConfig = (over: Partial<RunConfig>): RunConfig => ({
+  id: "x",
+  name: "x",
+  kind: "maven",
+  command: "mvn",
+  args: [],
+  cwd: null,
+  env: {},
+  detected: true,
+  isTest: false,
+  debugAdapter: null,
+  ...over,
+});
+
+const children = (n: BuildNode) => mavenChildren(n, maven, []) ?? [];
 const labels = (nodes: BuildNode[]) => nodes.map(nodeLabel);
 
 describe("Maven tree", () => {
@@ -145,14 +160,21 @@ describe("Maven tree", () => {
     expect(isRunnable(deps[0]!)).toBe(false);
   });
 
-  it("does not list Run Configurations in the tree (run configs live in Services)", () => {
-    const walk = (nodes: readonly BuildNode[]): string[] =>
-      nodes.flatMap((n) => [nodeLabel(n), ...walk(mavenChildren(n, maven) ?? [])]);
-    expect(walk(mavenRoots(maven))).not.toContain("Run Configurations");
+  it("lists the project's maven run configurations", () => {
+    const configs = [
+      runConfig({ id: "a", name: "core [test]", cwd: "core", detected: false }),
+      runConfig({ id: "b", name: "root", cwd: null }),
+      runConfig({ id: "c", kind: "npm", cwd: "core" }),
+    ];
+    const top = mavenChildren(mavenRoots(maven)[1]!, maven, configs)!;
+    expect(labels(top)).toEqual(["Lifecycle", "Plugins", "Run Configurations", "core", "Demo App"]);
+    expect(labels(mavenChildren(top[2]!, maven, configs)!)).toEqual(["root"]);
+    const runs = mavenChildren(top[3]!, maven, configs)!.find((n) => n.kind === "runConfigs")!;
+    expect(labels(mavenChildren(runs, maven, configs)!)).toEqual(["core [test]"]);
   });
 
   it("expand all opens folders but not dependency subtrees", () => {
-    const keys = expandableKeys(mavenRoots(maven), (n) => mavenChildren(n, maven));
+    const keys = expandableKeys(mavenRoots(maven), (n) => mavenChildren(n, maven, []));
     expect(keys.has("mvn:pom.xml")).toBe(true);
     expect(keys.has("mvn:core/pom.xml:deps")).toBe(true);
     expect([...keys].some((k) => k.includes("deps/"))).toBe(false);
@@ -263,13 +285,14 @@ describe("Gradle tree and runs", () => {
     stale: false,
     syncError: null,
   };
-  const kids = (n: BuildNode) => gradleChildren(n, gradle) ?? [];
+  const kids = (n: BuildNode) =>
+    gradleChildren(n, [gradle], [runConfig({ id: "g", name: "app [run]", kind: "gradle" })]) ?? [];
 
   it("nests subprojects and groups tasks, other last", () => {
-    const roots = gradleRoots(gradle);
+    const roots = gradleRoots([gradle]);
     expect(labels(roots)).toEqual(["gradle-demo"]);
-    expect(labels(kids(roots[0]!))).toEqual(["Tasks", "app", "core"]);
-    const app = kids(roots[0]!)[1]!;
+    expect(labels(kids(roots[0]!))).toEqual(["Tasks", "Run Configurations", "app", "core"]);
+    const app = kids(roots[0]!)[2]!;
     const groups = kids(kids(app)[0]!);
     expect(labels(groups)).toEqual(["application", "build", "verification", "other"]);
     expect(labels(kids(kids(kids(roots[0]!)[0]!)[0]!))).toEqual(["init", "wrapper"]);
@@ -294,46 +317,68 @@ describe("Gradle tree and runs", () => {
     ]);
   });
 
+  it("keeps identical project paths and tasks of independent builds distinct", () => {
+    const builds = ["first", "second"].map((dir) => ({
+      ...gradle,
+      dir,
+      command: `/p/${dir}/gradlew`,
+      env: { JAVA_HOME: `/${dir}/jdk` },
+      projects: gradle.projects.map((p) => ({ ...p, dir: `${dir}/${p.dir}`.replace(/\/$/, "") })),
+    }));
+    const roots = gradleRoots(builds);
+    expect(new Set(roots.map((n) => n.key)).size).toBe(2);
+    const tasks = roots.map((r) => {
+      const app = gradleChildren(r, builds, [])!.find((n) => n.kind === "gradleProject" && n.project.path === ":app")!;
+      const folder = gradleChildren(app, builds, [])![0]!;
+      const group = gradleChildren(folder, builds, [])!.find(
+        (n) => n.kind === "taskGroup" && n.group === "verification",
+      )!;
+      return gradleChildren(group, builds, [])![0]!;
+    });
+    expect(tasks[0]!.key).not.toBe(tasks[1]!.key);
+    const runs = builds.map((b) => gradleTaskConfig(b, b.projects[1]!, ["test"], { offline: true }));
+    expect(runs[0]!.id).not.toBe(runs[1]!.id);
+    expect(runs[1]).toMatchObject({
+      command: "/p/second/gradlew",
+      cwd: "second",
+      env: { JAVA_HOME: "/second/jdk" },
+      args: [":app:test", "--offline"],
+    });
+    expect(gradleProjectKey(builds[1]!, builds[1]!.projects[1]!)).toBe('gradle:["second",":app"]');
+  });
+
+  it("shows run configurations only under their owning linked build", () => {
+    const nested = {
+      ...gradle,
+      dir: "nested",
+      projects: gradle.projects.map((p) => ({ ...p, dir: `nested/${p.dir}` })),
+    };
+    const configs = [
+      runConfig({ id: "root", kind: "gradle", cwd: "app" }),
+      runConfig({ id: "nested", kind: "gradle", cwd: "nested/app" }),
+      runConfig({ id: "absolute", kind: "gradle", cwd: "/p/nested/app" }),
+      runConfig({ id: "other", kind: "maven", cwd: "nested" }),
+    ];
+    expect(gradleRunConfigs(gradle, [gradle, nested], configs, "/p").map((c) => c.id)).toEqual(["root"]);
+    expect(gradleRunConfigs(nested, [gradle, nested], configs, "/p").map((c) => c.id)).toEqual(["nested", "absolute"]);
+  });
+
+  it("places a saved run under its directly linked root instead of a longer sibling composite", () => {
+    const composite = {
+      ...gradle,
+      dir: "very-long-composite",
+      projects: [{ ...gradle.projects[1]!, path: ":b:app", dir: "b/app", build: ":b" }],
+    };
+    const direct = { ...gradle, dir: "b", projects: [{ ...gradle.projects[1]!, dir: "b/app" }] };
+    const saved = runConfig({ id: "saved", kind: "gradle", cwd: "b/app" });
+    const builds = [composite, direct];
+    expect(gradleRunConfigs(composite, builds, [saved], "/p")).toEqual([]);
+    expect(gradleRunConfigs(direct, builds, [saved], "/p")).toEqual([saved]);
+  });
+
   it("completes task names and paths", () => {
     const labelsOf = taskCompletions("ru", gradle).map((c) => c.label);
     expect(labelsOf).toEqual([":app:run"]);
     expect(taskCompletions("clean wr", gradle).map((c) => c.line)).toEqual(["clean wrapper"]);
-  });
-});
-
-describe("skippedTestRun", () => {
-  const phaseNode = (name: string): BuildNode => ({
-    kind: "phase",
-    key: `mvn:p:${name}`,
-    project: project({}),
-    phase: name,
-  });
-  const surefire = {
-    groupId: "org.apache.maven.plugins",
-    artifactId: "maven-surefire-plugin",
-    version: null,
-    prefix: "surefire",
-    goals: ["test"],
-  } satisfies MavenPlugin;
-  const goalNode = (goal: string): BuildNode => ({
-    kind: "goal",
-    key: `mvn:g:${goal}`,
-    project: project({}),
-    plugin: surefire,
-    goal,
-  });
-
-  it("refuses only a pure test-phase selection while Skip Tests is on", () => {
-    expect(skippedTestRun([phaseNode("test")], true)).toBe(true);
-    // multi-module test selection
-    expect(skippedTestRun([phaseNode("test"), phaseNode("test")], true)).toBe(true);
-    // mode off runs normally
-    expect(skippedTestRun([phaseNode("test")], false)).toBe(false);
-    // mixed goals still build something
-    expect(skippedTestRun([phaseNode("clean"), phaseNode("test")], true)).toBe(false);
-    // plugin goals stay runnable
-    expect(skippedTestRun([goalNode("test")], true)).toBe(false);
-    // empty selection
-    expect(skippedTestRun([], true)).toBe(false);
   });
 });

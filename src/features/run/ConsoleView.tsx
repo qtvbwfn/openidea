@@ -24,10 +24,8 @@ import styles from "./Run.module.css";
 import { useConsoleSelection } from "./useConsoleSelection";
 import { hostBinding, formatBinding, hasPrimaryModifier, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
-import { ConsoleFindBar } from "./FindBar";
-import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "./find";
-import { sqlFromMybatisLog } from "@/features/mybatis/sqlLog";
-import { notifications } from "@/workbench/contributions";
+import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
+import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "@/ui/consoleFind";
 
 const ROW = 20;
 
@@ -161,13 +159,9 @@ export interface ConsoleViewProps {
   onClear?: () => void;
   /** Set while the process accepts input. */
   input?: ConsoleInput;
-  /** The run executes on a JVM: shows the MyBatis SQL conversion item for log selections. */
-  mybatisSql?: boolean;
   /** Controlled find bar (the Run toolbar button); without it ⌘F opens it locally. */
   findOpen?: boolean;
   onFindOpenChange?: (open: boolean) => void;
-  /** Reports the scrolling element (console strip buttons scroll by page). */
-  onScroller?: (el: HTMLDivElement | null) => void;
   "aria-label"?: string;
 }
 
@@ -180,10 +174,8 @@ export function ConsoleView({
   cwd,
   onClear,
   input,
-  mybatisSql,
   findOpen: controlledFindOpen,
   onFindOpenChange,
-  onScroller,
   ...aria
 }: ConsoleViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -239,12 +231,6 @@ export function ConsoleView({
   useEffect(() => {
     virtualizer.measure();
   }, [softWrap, virtualizer]);
-
-  // The console strip's page-scroll buttons scroll this element.
-  useEffect(() => {
-    onScroller?.(scrollRef.current);
-    return () => onScroller?.(null);
-  }, [onScroller]);
 
   useLayoutEffect(() => {
     if (!follow || count === 0) return;
@@ -357,7 +343,7 @@ export function ConsoleView({
   // The bar owns Escape / Enter / F3 / ⌘G while it is focused; keep the IDE keymap out.
   useEffect(() => {
     if (!findOpen) return;
-    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-run-find]"));
+    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-console-find]"));
   }, [findOpen]);
 
   // A new query (or option) starts from the viewport, not from the top of the output.
@@ -425,36 +411,6 @@ export function ConsoleView({
         run: () => void navigator.clipboard?.writeText(selection).catch(() => undefined),
       },
       { label: "Select All", shortcut: formatBinding(hostBinding("Meta+A")), run: selectAll },
-      ...(mybatisSql && selection.includes("==>  Preparing")
-        ? [
-            {
-              label: tx("Copy MyBatis SQL"),
-              icon: "gutter-mybatis",
-              run: () => {
-                const sql = sqlFromMybatisLog(selection);
-                if (!sql) {
-                  notifications().notify({
-                    group: "run",
-                    level: "warning",
-                    key: "mybatis-sql-convert",
-                    title: "MyBatis SQL",
-                    body: tx("The selection has no MyBatis SQL log to convert"),
-                  });
-                  return;
-                }
-                navigator.clipboard?.writeText(sql).catch(() =>
-                  notifications().notify({
-                    group: "run",
-                    level: "error",
-                    key: "mybatis-sql-copy",
-                    title: "MyBatis SQL",
-                    body: tx("Could not copy to the clipboard"),
-                  }),
-                );
-              },
-            },
-          ]
-        : []),
       { label: "Copy All", run: () => void navigator.clipboard?.writeText(model.text()).catch(() => undefined) },
       {
         label: "Find…",

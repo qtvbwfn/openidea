@@ -6,16 +6,15 @@
  */
 
 import { FontPicker } from "../components/FontPicker";
-import { useId, useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
 import { usePlatform } from "@/platform/platformInfo";
-import { call, commands, isTauri, type AppHome } from "@/platform/ipc";
+import { isTauri } from "@/platform/ipc";
 import { ZOOM_LIMITS } from "@/platform/zoom";
 import { SCHEMES as EDITOR_SCHEMES, listSchemes, customSchemes } from "@/platform/colorScheme";
 import { formatTimestamp } from "@/platform/dateFormat";
-import { Button, Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
-import { notifications } from "@/workbench/contributions";
+import { Checkbox, IconButton, Input, Popup, type SelectOption, T } from "@/ui";
 import { NOTIFICATION_GROUPS } from "@/workbench/notificationStore";
 import { ColorSwatches, NumberInput, Row, SearchLabel, Select, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
@@ -34,7 +33,8 @@ import { HTTP_PROXY_PAGE } from "./httpProxy";
 import styles from "./Behavior.module.css";
 import { LOCALES, SUPPORTED_LOCALES, tx, useT } from "@/platform/i18n";
 import { BUILTIN_THEMES, useContributedIconThemes } from "@/platform/themes";
-import { originDetail, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
+import { currentThemeChoice, originDetail, previewTheme, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
+import { themePreview } from "@/workbench/quickSwitch";
 
 const BUILTIN_THEME_LABELS = BUILTIN_THEMES.map((t) => t.label);
 
@@ -63,12 +63,28 @@ function ThemeRow() {
   const matched = useLabelMatch("Sync with OS");
   const choices = useThemeChoices();
   const shown: ConcreteTheme = theme === "system" ? "light" : theme;
+  // The theme under the pointer shows as in Quick Switch; the one picked here shows until Apply or Cancel.
+  const picker = useMemo(() => themePreview(), []);
+  const previewed = useRef(false);
+  useEffect(
+    () => () => {
+      if (previewed.current) previewTheme(null);
+    },
+    [],
+  );
+  const preview = (id: ConcreteTheme | null) => {
+    previewed.current = true;
+    if (id !== null) return picker.preview(id);
+    picker.restore();
+    if (shown !== currentThemeChoice()) previewTheme(shown);
+  };
   return (
     <Row label="Theme">
       <Select<ConcreteTheme>
         value={shown}
         options={themeSelectOptions(choices, shown)}
         onChange={setTheme}
+        onPreview={preview}
         aria-label="Theme"
         disabled={sync}
       />
@@ -421,114 +437,6 @@ function DefaultDirectoryRow() {
   );
 }
 
-/**
- * Where config and data live: the platform dirs by default, one chosen base
- * otherwise. Changing or resetting takes effect on the next start, when the
- * migration dialog asks whether to move the existing data (no data is
- * copied here — the dialog owns the move).
- */
-function ConfigurationDirectoryRow() {
-  const t = useT();
-  const id = useId();
-  const [home, setHome] = useState<AppHome | null>(null);
-  const [path, setPath] = useState("");
-  useEffect(() => {
-    if (isTauri())
-      void commands
-        .appHome()
-        .then(setHome)
-        .catch(() => setHome(null));
-  }, []);
-  const browse = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const picked = await open({
-      directory: true,
-      multiple: false,
-      title: "Configuration Directory",
-      defaultPath: home?.base || home?.configDir || undefined,
-    });
-    const pickedPath = Array.isArray(picked) ? picked[0] : picked;
-    if (pickedPath) setPath(pickedPath);
-  };
-  const notifyAndRestart = () =>
-    notifications().notify({
-      level: "info",
-      title: t("Configuration directory"),
-      body: t("The new directory is used after a restart."),
-      sticky: true,
-      actions: [{ label: t("Restart"), run: () => void commands.appRestart() }],
-    });
-  const apply = async () => {
-    try {
-      await call(commands.appHomeSet(path.trim()));
-    } catch (e) {
-      notifications().notify({
-        level: "error",
-        title: t("Configuration directory"),
-        body: e instanceof Error ? e.message : String(e),
-      });
-      return;
-    }
-    notifyAndRestart();
-  };
-  const reset = async () => {
-    try {
-      await call(commands.appHomeReset());
-    } catch (e) {
-      notifications().notify({
-        level: "error",
-        title: t("Configuration directory"),
-        body: e instanceof Error ? e.message : String(e),
-      });
-      return;
-    }
-    notifyAndRestart();
-  };
-  // OPENIDEA_HOME wins over the pointer file: the row turns read-only rather
-  // than offering a change the next start would ignore.
-  const locked = home?.envOverride ?? false;
-  const hint = locked
-    ? "OPENIDEA_HOME is set and takes precedence over this setting."
-    : home?.base
-      ? "Settings and data live under this directory."
-      : home && home.dataDir !== home.configDir
-        ? tx`Data directory: ${home.dataDir}`
-        : undefined;
-  return (
-    <Row label="Configuration directory" htmlFor={id} hint={hint}>
-      <Input
-        id={id}
-        className={styles.pathInput}
-        value={path || home?.base || home?.configDir || ""}
-        placeholder={home ? undefined : "System default"}
-        readOnly={locked || !isTauri()}
-        onChange={(e) => setPath(e.target.value)}
-      />
-      <IconButton
-        icon="folder-open"
-        size="small"
-        title="Browse…"
-        aria-label="Browse"
-        disabled={locked || !isTauri()}
-        onClick={() => void browse()}
-      />
-      <Button
-        size="small"
-        variant="primary"
-        disabled={locked || !isTauri() || !path.trim()}
-        onClick={() => void apply()}
-      >
-        <T>Apply</T>
-      </Button>
-      {home?.base && (
-        <Button size="small" disabled={locked} onClick={() => void reset()}>
-          <T>Reset to default</T>
-        </Button>
-      )}
-    </Row>
-  );
-}
-
 function IdleSaveRow() {
   const [on, setOn] = useSetting<boolean>("general.saveOnIdle");
   const [seconds, setSeconds] = useSetting<number>("general.idleSeconds");
@@ -770,7 +678,6 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             component: OpenProjectInRow,
           },
           { kind: "custom", label: "Default directory", component: DefaultDirectoryRow },
-          { kind: "custom", label: "Configuration directory", component: ConfigurationDirectoryRow },
         ],
       },
       {

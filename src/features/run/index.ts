@@ -16,6 +16,7 @@ import {
   registerMenuGroup,
   registerOverlay,
   registerRunAnythingProvider,
+  registerRunningProcessesProvider,
   registerServiceProvider,
   registerTitleItem,
   registerToolWindow,
@@ -42,7 +43,7 @@ import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
 import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services";
-import { ServiceImportHost } from "./serviceImport";
+import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { remoteDebugBlocked } from "./remote";
@@ -103,11 +104,11 @@ async function runSelected() {
   await startRun(config);
 }
 
-async function debugConfig(config: RunConfig, chain: readonly string[] = [], origin?: "services") {
+async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
   if (config.kind === "compound") {
     if (!(await prepareLaunch(config, chain))) return;
     const children = compoundChildren(config, useRun.getState().configs);
-    await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id], origin)));
+    await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id])));
     return;
   }
   if (remoteDebugBlocked(config)) return;
@@ -115,13 +116,13 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], ori
   recordRun(config.id);
   // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
   if (isDebugOnly(config) && getAction("debug.startConfig")) {
-    await executeAction("debug.startConfig", { config, services: origin === "services" });
+    await executeAction("debug.startConfig", config);
     return;
   }
   // A single compiled file (rustc / clang): build with debug info, then debug the binary.
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
-    await launchProduced(compiled, true, origin === "services");
+    await launchProduced(compiled, true);
     return;
   }
   // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.
@@ -132,11 +133,11 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], ori
   }
   // Maven / Gradle: the build tool starts the JVM with a debug agent, the debugger attaches.
   if (jdwpLaunch(config) && getAction("debug.attach")) {
-    await debugWithAgent(config, origin);
+    await debugWithAgent(config);
     return;
   }
   if (getAction("debug.startConfig")) {
-    await executeAction("debug.startConfig", { config, services: origin === "services" });
+    await executeAction("debug.startConfig", config);
     return;
   }
   notifications().notify({
@@ -294,8 +295,14 @@ export function activate(): () => void {
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({ id: "run.editConfigs", component: EditConfigsOverlay }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
-    registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
     registerServiceProvider(runServiceProvider),
+    registerRunningProcessesProvider({
+      id: "run",
+      running: () =>
+        serviceSessions(useRun.getState().sessions, useDebugRunSessions.getState().serviceSessions)
+          .filter(liveServiceSession)
+          .map((s) => ({ name: s.config.name })),
+    }),
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
     activateStackTrace(),
@@ -460,12 +467,7 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
-          // Services passes `{ config, origin: "services" }` to keep the launch inside the window.
-          const origin =
-            arg && typeof arg === "object" && "origin" in arg && (arg as { origin?: unknown }).origin === "services"
-              ? "services"
-              : undefined;
-          if (config) await debugConfig(config, [], origin);
+          if (config) await debugConfig(config);
         },
       },
       {

@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import {
-  categoryOf,
   commandLine,
   duplicateConfig,
   formatArgs,
   groupConfigs,
-  isJvmKind,
   mergeConfigs,
   newConfig,
   parseArgs,
@@ -16,10 +14,8 @@ import {
   validateConfig,
 } from "./configs";
 import { contextConfig, fileRole } from "./context";
-import { tomcatType } from "./tomcat";
-import { registerRunConfigType } from "@/workbench/contributions";
 import { envFromRows } from "./EnvDialog";
-import { defaultSelection } from "./store";
+import { configRemoved, defaultSelection, rerunConfig, useRun, type RunSession } from "./store";
 
 const cfg = (over: Partial<RunConfig> & { id: string }): RunConfig => ({
   name: over.id,
@@ -349,49 +345,37 @@ describe("context configuration", () => {
   });
 });
 
-describe("categoryOf", () => {
-  it("maps kinds to their language categories and unlisted ones to Others", () => {
-    expect(categoryOf("spring-boot")).toBe("Java");
-    expect(categoryOf("remote-jvm")).toBe("Java");
-    expect(categoryOf("maven")).toBe("Build Tools");
-    expect(categoryOf("npm")).toBe("JavaScript");
-    expect(categoryOf("node-remote")).toBe("JavaScript");
-    expect(categoryOf("pytest")).toBe("Python");
-    expect(categoryOf("python-remote")).toBe("Python");
-    expect(categoryOf("cargo")).toBe("Rust");
-    expect(categoryOf("go")).toBe("Go");
-    expect(categoryOf("go-test")).toBe("Go");
-    expect(categoryOf("go-remote")).toBe("Go");
-    expect(categoryOf("godot")).toBe("Others");
-    expect(categoryOf("godot-attach")).toBe("Others");
+describe("rerunning a session after its configuration changed (#1497)", () => {
+  const session = (config: RunConfig, baseConfig?: RunConfig): RunSession => ({
+    id: "s",
+    config,
+    baseConfig,
+    runId: null,
+    status: "finished",
+    exitCode: 0,
+    startedAt: 1,
+    endedAt: 2,
+    stdinClosed: true,
   });
 
-  it("prefers a registered type's group (Servers, Docker) over the category map", () => {
-    const disposeTomcat = registerRunConfigType(tomcatType);
-    expect(categoryOf("tomcat")).toBe("Servers");
-    disposeTomcat();
-    const dispose = registerRunConfigType({
-      id: "fake-server",
-      label: "Fake",
-      icon: "server",
-      group: "Servers",
-      fields: [],
-      commandLine: () => null,
-    });
-    expect(categoryOf("fake-server")).toBe("Servers");
-    dispose();
+  it("launches the configuration as saved now, or the one it ran with once deleted", () => {
+    const ran = cfg({ id: "app", command: "python", args: ["init.py"] });
+    const edited = { ...ran, args: ["main.py"] };
+    useRun.setState({ configs: [edited] });
+    expect(rerunConfig(session(ran))).toBe(edited);
+    expect(configRemoved("app")).toBe(false);
+    useRun.setState({ configs: [] });
+    expect(rerunConfig(session(ran))).toBe(ran);
+    expect(configRemoved("app")).toBe(true);
+    // A run that was never a listed configuration isn't "removed".
+    expect(configRemoved("build:task")).toBe(false);
   });
-});
 
-describe("isJvmKind", () => {
-  it.each([
-    ["spring-boot", true],
-    ["application", true],
-    ["maven", true],
-    ["gradle", true],
-    ["tomcat", true],
-    ["python", false],
-    ["npm", false],
-    ["shell", false],
-  ])("%s → %s", (kind, expected) => expect(isJvmKind(kind)).toBe(expected));
+  it("keeps the tests of a derived run (Rerun Failed Tests)", () => {
+    const base = cfg({ id: "tests", isTest: true });
+    const derived = { ...base, args: ["-k", "failing"] };
+    useRun.setState({ configs: [base] });
+    expect(rerunConfig(session(derived, base))).toBe(derived);
+    useRun.setState({ configs: [] });
+  });
 });
