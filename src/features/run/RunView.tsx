@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import type { RunTargetValid } from "@/platform/remoteSettings";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { EmptyState, IconButton, SplitGroup, SplitHandle, SplitPanel, Tabs, type TabItem, T } from "@/ui";
 import { executeAction } from "@/platform/actions";
-import { shortcutLabel } from "@/platform/keymap";
+import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { ConsoleModel } from "./console";
 import { ConsoleView } from "./ConsoleView";
 import { TerminalConsole } from "./TerminalConsole";
@@ -32,7 +32,7 @@ import { TestTreeView, formatDuration } from "./TestTreeView";
 import { StackTracePanel, closeStackTrace, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
-import { configIcon, isJvmKind } from "./configs";
+import { configIcon } from "./configs";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -52,36 +52,19 @@ export function sessionIcon(s: RunSession): string {
   return configIcon(s.config);
 }
 
-/**
- * What a console exposes to a fixed control strip (the Services detail pane keeps
- * one permanently on its right edge): page scrolling, jump to the tail, clearing,
- * and — when the console has one — its soft-wrap switch.
- */
-export interface ConsoleControls {
-  scrollByPage(dir: 1 | -1): void;
-  scrollToEnd(): void;
-  clear(): void;
-  wrap?: { on: boolean; toggle(): void };
-  /** Scroll-to-end toggle state (pressed state of the strip button). */
-  follow?: boolean;
-}
-
-/**
- * A session's console: the output (or terminal), the test tree when the run reports
- * tests, and the console controls (scroll / soft-wrap / clear) as a strip on the
- * console's right edge, as in IDEA. Shared by the Run tool window and the Services
- * window; the Services pane reports the controls up (`strip={false}`) and keeps a
- * permanent strip of its own.
- */
-export function SessionConsole({
+export function SessionPanel({
   session,
-  strip = true,
-  onControls,
+  onRerun,
+  onDebug,
+  onStop,
 }: {
   session: RunSession;
-  strip?: boolean;
-  onControls?: (controls: ConsoleControls | null) => void;
+  onRerun?: (() => void) | null;
+  /** Override the Debug button (Services: rerun the attached debugger's launch); null disables it. */
+  onDebug?: (() => void) | null;
+  onStop?: () => void;
 }) {
+  const updating = useApplicationUpdates((s) => s.ids.has(session.id));
   const version = useRun((s) => s.versions[session.id] ?? 0);
   const rt = runtime(session.id);
   const [follow, setFollow] = useState(true);
@@ -90,30 +73,9 @@ export function SessionConsole({
   const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
   const softWrap = wrapOverride ?? defaultWrap;
   const [selectedTest, setSelectedTest] = useState<string | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const running = session.status === "running" || session.status === "starting";
   const cwd = runDirectory(session.config.cwd);
-  // The strip's page-scroll buttons scroll the console (ConsoleView reports its scroller).
-  const scroller = useRef<HTMLDivElement | null>(null);
-  const onScroller = useCallback((el: HTMLDivElement | null) => {
-    scroller.current = el;
-  }, []);
-  const controls = useMemo<ConsoleControls>(
-    () => ({
-      scrollByPage: (dir) => {
-        const el = scroller.current;
-        if (el) el.scrollBy({ top: dir * el.clientHeight * 0.8 });
-      },
-      scrollToEnd: () => setFollow(true),
-      clear: () => clearConsole(session.id),
-      wrap: { on: softWrap, toggle: () => setWrapOverride(!softWrap) },
-      follow,
-    }),
-    [softWrap, follow, session.id],
-  );
-  useEffect(() => {
-    if (strip) return;
-    onControls?.(controls);
-    return () => onControls?.(null);
-  }, [strip, controls, onControls]);
 
   // Selecting a test with captured output shows just that output (like IDEA).
   const testModel = useMemo(() => {
@@ -154,9 +116,9 @@ export function SessionConsole({
           softWrap={softWrap}
           follow={testModel ? false : follow}
           onFollowChange={setFollow}
-          onScroller={onScroller}
+          findOpen={findOpen}
+          onFindOpenChange={setFindOpen}
           cwd={cwd}
-          mybatisSql={isJvmKind(session.config.kind)}
           onClear={() => clearConsole(session.id)}
           input={
             !testModel && acceptsInput(session)
@@ -173,69 +135,6 @@ export function SessionConsole({
       )}
     </div>
   );
-
-  const body = rt.tests ? (
-    <SplitGroup orientation="horizontal" id={`run-tests-${session.id}`} className={styles.testSplit}>
-      <SplitPanel id="tests" defaultSize="32%" minSize="140px">
-        <TestTreeView
-          results={rt.tests}
-          version={version}
-          cwd={cwd}
-          running={session.status === "running" || session.status === "starting"}
-          selected={selectedTest}
-          onSelect={setSelectedTest}
-          onRunTests={(ids, debug) => void runSelectedTests(session.id, ids, debug)}
-        />
-      </SplitPanel>
-      <SplitHandle />
-      <SplitPanel id="console" minSize="200px">
-        {consoleColumn}
-      </SplitPanel>
-    </SplitGroup>
-  ) : (
-    consoleColumn
-  );
-
-  return (
-    <div className={styles.sessionConsole}>
-      <div className={styles.consoleMain}>{body}</div>
-      {/* IDEA's console controls: a narrow strip on the console's right edge (find stays on ⌘F). */}
-      {strip && !rt.terminal && (
-        <div className={styles.consoleStrip}>
-          <IconButton icon="chevron-up" iconSize={14} title="Scroll Up" onClick={() => controls.scrollByPage(-1)} />
-          <IconButton icon="chevron-down" iconSize={14} title="Scroll Down" onClick={() => controls.scrollByPage(1)} />
-          <IconButton icon="soft-wrap" iconSize={14} title="Soft-Wrap" pressed={softWrap} onClick={toggleWrap} />
-          <IconButton
-            icon="arrow-down"
-            iconSize={14}
-            title="Scroll to End"
-            pressed={follow}
-            onClick={() => setFollow((v) => !v)}
-          />
-          <IconButton icon="trash" iconSize={14} title="Clear All" onClick={() => clearConsole(session.id)} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-export function SessionPanel({
-  session,
-  onRerun,
-  onDebug,
-  onStop,
-}: {
-  session: RunSession;
-  onRerun?: (() => void) | null;
-  /** Override the Debug button (Services: rerun the attached debugger's launch); null disables it. */
-  onDebug?: (() => void) | null;
-  onStop?: () => void;
-}) {
-  const updating = useApplicationUpdates((s) => s.ids.has(session.id));
-  const rt = runtime(session.id);
-  const running = session.status === "running" || session.status === "starting";
-
-  if (!rt) return null;
 
   return (
     <div className={styles.session}>
@@ -286,6 +185,28 @@ export function SessionPanel({
           />
         )}
         <div className={styles.toolbarSep} />
+        {!rt.terminal && (
+          <>
+            <IconButton
+              icon="search"
+              iconSize={14}
+              title="Find…"
+              shortcut={formatBinding(hostBinding("Meta+F"))}
+              pressed={findOpen}
+              onClick={() => setFindOpen((v) => !v)}
+            />
+            <IconButton
+              icon="arrow-down"
+              iconSize={14}
+              title="Scroll to End"
+              pressed={follow}
+              onClick={() => setFollow((v) => !v)}
+            />
+            <IconButton icon="soft-wrap" iconSize={14} title="Soft-Wrap" pressed={softWrap} onClick={toggleWrap} />
+          </>
+        )}
+        <IconButton icon="trash" iconSize={14} title="Clear All" onClick={() => clearConsole(session.id)} />
+        <div className={styles.toolbarSep} />
         <IconButton
           icon="settings"
           iconSize={14}
@@ -293,7 +214,29 @@ export function SessionPanel({
           onClick={() => void executeAction("run.editConfigs", session.config.id)}
         />
       </div>
-      <SessionConsole session={session} />
+      <div className={styles.sessionBody}>
+        {rt.tests ? (
+          <SplitGroup orientation="horizontal" id={`run-tests-${session.id}`} className={styles.testSplit}>
+            <SplitPanel id="tests" defaultSize="32%" minSize="140px">
+              <TestTreeView
+                results={rt.tests}
+                version={version}
+                cwd={cwd}
+                running={running}
+                selected={selectedTest}
+                onSelect={setSelectedTest}
+                onRunTests={(ids, debug) => void runSelectedTests(session.id, ids, debug)}
+              />
+            </SplitPanel>
+            <SplitHandle />
+            <SplitPanel id="console" minSize="200px">
+              {consoleColumn}
+            </SplitPanel>
+          </SplitGroup>
+        ) : (
+          consoleColumn
+        )}
+      </div>
     </div>
   );
 }
@@ -327,14 +270,9 @@ function currentTab(
   return traces.length ? { trace: traces[traces.length - 1]! } : null;
 }
 
-/** Sessions visible in the Run tool window: Services-owned sessions stay in the Services window. */
-export function windowSessions(sessions: readonly RunSession[]): RunSession[] {
-  return sessions.filter((s) => s.origin !== "services");
-}
-
 /** Session (and stack trace) tabs in the tool window header. */
 export function RunTabs() {
-  const sessions = windowSessions(useRun((s) => s.sessions));
+  const sessions = useRun((s) => s.sessions);
   const traces = useStackTraces((s) => s.tabs);
   const runTargets = useWorkflowSettings((s) => s.runTargets);
   const active = useRun((s) => s.activeSession);
@@ -359,7 +297,7 @@ export function RunTabs() {
 }
 
 export function RunView() {
-  const sessions = windowSessions(useRun((s) => s.sessions));
+  const sessions = useRun((s) => s.sessions);
   const traces = useStackTraces((s) => s.tabs);
   const active = useRun((s) => s.activeSession);
   const current = currentTab(sessions, traces, active);

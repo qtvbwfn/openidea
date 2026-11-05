@@ -11,7 +11,7 @@
  * generation) — `shortcut: no incremental invalidation`.
  */
 import { call, commands, nextRequestId, type RequestId } from "@/platform/ipc";
-import { streamSearch } from "@/features/search/common/textSearch";
+import { streamSearch } from "@/platform/textSearch";
 import { readManyFileLines } from "@/editor/lsp/files";
 import { basename } from "@/platform/project";
 import { parseMapperXml, type XmlStatement } from "./xmlParse";

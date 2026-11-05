@@ -52,7 +52,7 @@ import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
-import { recordRun, showServicesSession } from "./services";
+import { recordRun } from "./services";
 import { startedPort } from "./serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
 import { gradleDelegation, gradleTestLaunch } from "./gradleRun";
@@ -81,8 +81,6 @@ export interface RunSession {
   terminal?: boolean;
   /** The HTTP port the application's embedded web server reported it started on. */
   httpPort?: number;
-  /** Started from the Services tool window: its console lives there, the Run window hides it. */
-  origin?: "services";
 }
 
 interface SessionRuntime {
@@ -617,15 +615,11 @@ export async function prepareLaunch(config: RunConfig, chain: readonly string[] 
 }
 
 /** Starts every configuration of a compound (after the compound's own before launch tasks). */
-export async function startCompound(
-  config: RunConfig,
-  chain: readonly string[] = [],
-  origin?: "services",
-): Promise<RunSession[]> {
+export async function startCompound(config: RunConfig, chain: readonly string[] = []): Promise<RunSession[]> {
   if (!(await prepareLaunch(config, chain))) return [];
   const children = compoundChildren(config, useRun.getState().configs);
   const sessions = await Promise.all(
-    children.map((c) => startRun(c, undefined, undefined, { chain: [...chain, config.id], origin })),
+    children.map((c) => startRun(c, undefined, undefined, { chain: [...chain, config.id] })),
   );
   return sessions.filter((s): s is RunSession => !!s);
 }
@@ -654,12 +648,10 @@ export async function startRun(
     prepared?: boolean;
     /** Configurations whose launch led to this one (before launch tasks, compounds): breaks cycles. */
     chain?: readonly string[];
-    /** The session was started from the Services tool window, not the Run window. */
-    origin?: "services";
   } = {},
 ): Promise<RunSession | null> {
   if (config.kind === "compound") {
-    await startCompound(config, options.chain, options.origin);
+    await startCompound(config, options.chain);
     return null;
   }
   // IDEA offers only Debug for Remote JVM Debug and the like: there is nothing to run.
@@ -726,8 +718,6 @@ export async function startRun(
       stdinClosed: false,
       stopped: false,
       httpPort: undefined,
-      // Explicit origin wins; reruns without one keep the session's (e.g. "Rerun" of a failed exit).
-      origin: options.origin ?? session.origin,
     };
     const updated = session;
     useRun.setState((s) => ({
@@ -745,7 +735,6 @@ export async function startRun(
       endedAt: null,
       stdinClosed: false,
       baseConfig,
-      origin: options.origin,
     };
     runtimes.set(session.id, newRuntime(config));
     const created = session;
@@ -773,8 +762,7 @@ export async function startRun(
   });
   rt.onExit = options.onExit;
   try {
-    // Services sessions never open the Run window, not even for `focusToolWindow`.
-    if (config.focusToolWindow && options.show !== false) toolWindowService().show("run", true);
+    if (config.focusToolWindow) toolWindowService().show("run", true);
     else if (options.show ?? config.openToolWindow ?? workflowSettings().run.showOnStart)
       toolWindowService().show("run");
   } catch {
@@ -857,8 +845,7 @@ export async function startRun(
 function revealSession(sessionId: string) {
   try {
     if (useRun.getState().activeSession !== sessionId) useRun.setState({ activeSession: sessionId });
-    if (getSession(sessionId)?.origin !== "services" && !toolWindowService().isVisible("run"))
-      toolWindowService().show("run");
+    if (!toolWindowService().isVisible("run")) toolWindowService().show("run");
   } catch {
     /* no workbench (tests) */
   }
@@ -1006,10 +993,7 @@ function notifyExit(sessionId: string, code: number | null) {
   } catch {
     /* no workbench */
   }
-  // A Services session's console is in the Services window — "Show" goes there
-  // instead of the Run window; Rerun inherits origin automatically.
-  const services = session.origin === "services";
-  if (visible && !services) return;
+  if (visible) return;
   const tests = runtimes.get(sessionId)?.tests;
   const failed = tests ? tests.counts().failed : 0;
   notifications().notify({
@@ -1022,12 +1006,8 @@ function notifyExit(sessionId: string, code: number | null) {
       {
         label: "Show",
         run: () => {
-          if (services) {
-            showServicesSession(session.config.id);
-          } else {
-            useRun.setState({ activeSession: sessionId });
-            toolWindowService().show("run", true);
-          }
+          useRun.setState({ activeSession: sessionId });
+          toolWindowService().show("run", true);
         },
       },
       { label: "Rerun", run: () => void startRun(rerunConfig(session), sessionId, session.baseConfig) },

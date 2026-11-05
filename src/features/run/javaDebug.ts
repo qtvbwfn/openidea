@@ -73,7 +73,7 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
 }
 
 /** Runs `config` with a JDWP agent and attaches the Java debugger to every JVM it starts. */
-export async function debugWithAgent(config: RunConfig, origin?: "services"): Promise<boolean> {
+export async function debugWithAgent(config: RunConfig): Promise<boolean> {
   const launch = jdwpLaunch(config);
   if (!launch) return false;
   let sessionId: string | null = null;
@@ -88,8 +88,6 @@ export async function debugWithAgent(config: RunConfig, origin?: "services"): Pr
       port,
       process: runId,
       runConfig: config,
-      // The attached debugger inherits the launch origin (Services or the Run window).
-      services: origin === "services",
     });
   };
   const session = await startRun(config, undefined, undefined, {
@@ -100,9 +98,6 @@ export async function debugWithAgent(config: RunConfig, origin?: "services"): Pr
       if (sessionId) attach(port);
       else waiting.push(port);
     },
-    // A Services debug launch never opens the Run window (the Run window's Debug button still does).
-    show: origin === "services" ? false : undefined,
-    origin,
   });
   if (!session) return true;
   sessionId = session.id;

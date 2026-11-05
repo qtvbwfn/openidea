@@ -177,8 +177,7 @@ describe("remote debugging", () => {
     useRun.setState({ configs: [local], loaded: true });
     expect(remoteDebugBlocked(local)).toBe(false);
     await executeAction("run.debugConfig", local.id);
-    // The arg carries the launch origin (Services or the Run window).
-    expect(startConfig).toHaveBeenCalledWith({ config: local, services: false });
+    expect(startConfig).toHaveBeenCalledWith(local);
   });
 
   it("remembers a non-Spring-Boot configuration accepted for debugging", async () => {
