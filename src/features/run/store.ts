@@ -42,7 +42,8 @@ import {
   type TestOutputParser,
 } from "./testing";
 import { GoTestOutput } from "./testing/go";
-import { TeamcityOutput } from "./testing/phpunit";
+import { moveToReportedClasses } from "./testing/jvm";
+import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./testing/rerun";
@@ -53,7 +54,7 @@ import { typeFor } from "./types";
 import { recordRun, showServicesSession } from "./services";
 import { startedPort } from "./serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
-import { gradleDelegation } from "./gradleRun";
+import { gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
 
@@ -568,8 +569,13 @@ function newRuntime(config: RunConfig): SessionRuntime {
     if (tests && parser) tests.apply(parser.feed(line));
   };
   const framework = tests && parser ? frameworkFor(config) : null;
+  // PHPUnit `--teamcity` and Gradle's test init script report through service messages.
   const stdout =
-    framework === "go" ? new GoTestOutput(feed) : framework === "phpunit" ? new TeamcityOutput(feed) : null;
+    framework === "go"
+      ? new GoTestOutput(feed)
+      : framework === "phpunit" || framework === "jvm"
+        ? new TeamcityOutput(feed)
+        : null;
   const runtime: SessionRuntime = {
     stdout,
     tests,
@@ -813,7 +819,8 @@ export async function startRun(
     if ((options.launch || launch.isTest) && launch.emulateTerminal) launch = { ...launch, emulateTerminal: false };
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
-    const started = launch.isTest ? withTestReporting(launch) : launch;
+    const started = launch.isTest ? await gradleTestLaunch(withTestReporting(launch)) : launch;
+    if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     const processStarted = performance.now();
     const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
     console.info("Run process started", { name: config.name, ms: performance.now() - processStarted });
@@ -931,7 +938,16 @@ function finishSession(sessionId: string, code: number | null) {
       if (rt.tests && rt.parser) {
         rt.tests.apply(rt.parser.end?.() ?? []);
         // Surefire / Gradle print only failures and class totals: per-test results come from the XML reports.
-        if (frameworkFor(session.config) === "jvm") rt.tests.apply(await jvmReportEvents(session));
+        if (frameworkFor(session.config) === "jvm") {
+          const reports = await jvmReports(session);
+          const tests = rt.tests;
+          // Tests the run reported already (Gradle's init script, Surefire failures) keep their output.
+          tests.apply(testReportEvents(reports).filter((e) => !("path" in e) || !tests.hasResult(e.path)));
+          moveToReportedClasses(
+            rt.tests,
+            reports.map((r) => r.className),
+          );
+        }
         if (runtimes.get(sessionId) !== rt) return;
         rt.tests.finish(code);
         recordTestStates(rt.tests);
@@ -948,12 +964,11 @@ function finishSession(sessionId: string, code: number | null) {
   }, 30);
 }
 
-async function jvmReportEvents(session: RunSession): Promise<TestEvent[]> {
+async function jvmReports(session: RunSession): Promise<TestCaseReport[]> {
   if (!isTauri()) return [];
   try {
     // Report files are written during the run; allow for coarse file-system timestamps.
-    const reports = await call(commands.runTestReports(session.config.cwd ?? null, session.startedAt - 2000));
-    return testReportEvents(reports);
+    return await call(commands.runTestReports(session.config.cwd ?? null, session.startedAt - 2000));
   } catch {
     return [];
   }
@@ -971,7 +986,7 @@ export function testReportEvents(reports: readonly TestCaseReport[]): TestEvent[
     for (const line of text.split("\n").slice(0, 200)) events.push({ type: "output", path, line });
     const outer = r.className.split("$")[0]!;
     const frame = new RegExp(
-      `at (${outer.replace(/[.$]/g, "\\$&")}(?:\\$[\\w$]+)?)\\.[\\w$<>]+\\(([\\w$-]+\\.(?:java|kt|groovy|scala)):(\\d+)\\)`,
+      `at (?:\\S*/)?(${outer.replace(/[.$]/g, "\\$&")}(?:\\$[\\w$]+)?)\\.[^()\\n]+\\(([\\w$-]+\\.(?:java|kt|groovy|scala)):(\\d+)\\)`,
     ).exec(r.output ?? "");
     if (frame) events.push({ type: "location", path, location: jvmFrameTarget(frame[1], frame[2]!, Number(frame[3])) });
   }

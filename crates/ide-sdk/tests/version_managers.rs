@@ -205,12 +205,11 @@ fn maven_daemon_run_configs_follow_the_jdk_and_heal_back() {
     assert_eq!(configs[0].command, mvnd_path, "detected config runs the daemon");
     assert_eq!(configs[1].command, mvnd_path, "saved `mvn` config is pointed at the daemon");
 
-    // A goal config saved from the tool window carries the launcher's absolute
-    // path as it was then (`detected: false`); matching by file name redirects
-    // it too, and leaves non-Maven commands alone.
+    // A launcher the user wrote as an absolute path is theirs and stays as
+    // configured (#1147); non-Maven commands are never rewritten either.
     let mut configs = [run(&mvn_path, false), run("/bin/echo", false)];
     ide_sdk::apply::apply_to_run_configs(&mut configs, &project, &s);
-    assert_eq!(configs[0].command, mvnd_path, "stale absolute `mvn` path follows the daemon");
+    assert_eq!(configs[0].command, mvn_path, "a custom absolute launcher is kept");
     assert_eq!(configs[1].command, "/bin/echo", "non-Maven commands are not rewritten");
 
     // A project JDK older than the daemon's Java 17 requirement keeps mvn.

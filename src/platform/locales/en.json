@@ -340,6 +340,7 @@
   "menu.vcs.addToVcs": "Add to VCS",
   "menu.vcs.compareWithBranch": "Compare with Branch or Revision…",
   "menu.vcs.showHistory": "Show History",
+  "menu.vcs.showHistoryForSelection": "Show History for Selection",
   "menu.build": "Build",
   "menu.build.buildProject": "Build Project",
   "menu.build.buildModule": "Build Module",
@@ -449,6 +450,8 @@
   "menu.editor.contextInfo": "Context Info",
   "run.services.configurationCount": "{count} configurations",
   "search.bookmarks.count": "{count, plural, one {# bookmark} other {# bookmarks}}",
+  "search.find.matches": "{matches, plural, one {# match} other {# matches}} in {files, plural, one {# file} other {# files}}",
+  "search.find.matchesIncomplete": "{matches, plural, one {#+ match} other {#+ matches}} in {files, plural, one {#+ file} other {#+ files}}",
   "settings.zoom.hint": "Change with {zoomIn} or {zoomOut}. Set to 100% with {reset}",
   "All methods already have statements": "All methods already have statements",
   "Cancel": "Cancel",
@@ -470,5 +473,10 @@
   "The document changed; retry": "The document changed; retry",
   "Copy MyBatis SQL": "Copy MyBatis SQL",
   "The selection has no MyBatis SQL log to convert": "The selection has no MyBatis SQL log to convert",
-  "Could not copy to the clipboard": "Could not copy to the clipboard"
+  "Could not copy to the clipboard": "Could not copy to the clipboard",
+  "Configuration directory": "Configuration directory",
+  "The new directory is used after a restart.": "The new directory is used after a restart.",
+  "Restart": "Restart",
+  "Configuration": "Configuration",
+  "No debug output available": "No debug output available"
 }

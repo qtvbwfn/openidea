@@ -22,6 +22,7 @@ blake3.workspace = true
 tracing.workspace = true
 tempfile.workspace = true
 globset.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

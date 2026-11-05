@@ -55,11 +55,33 @@ const DEFAULT_FORMATTER: ExternalFormatterValid = {
   runOnSave: false,
 };
 
+/** `languages.php.languageLevel` values; `""` = Auto (from `composer.json`). */
+export const PHP_LANGUAGE_LEVELS = [
+  "",
+  "5.6",
+  "7.0",
+  "7.1",
+  "7.2",
+  "7.3",
+  "7.4",
+  "8.0",
+  "8.1",
+  "8.2",
+  "8.3",
+  "8.4",
+  "8.5",
+] as const;
+
 export interface LanguagesValid {
   python: { interpreter: string; activateVirtualenv: boolean };
   ruby: { interpreter: string };
   node: { interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
-  php: { interpreter: string };
+  php: {
+    interpreter: string;
+    languageLevel: (typeof PHP_LANGUAGE_LEVELS)[number];
+    includePaths: string[];
+    stubs: string[];
+  };
   rust: {
     toolchain: string;
     stdlib: string;
@@ -128,7 +150,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   python: { interpreter: "", activateVirtualenv: true },
   ruby: { interpreter: "" },
   node: { interpreter: "", packageManager: "" },
-  php: { interpreter: "" },
+  php: { interpreter: "", languageLevel: "", includePaths: [], stubs: [] },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
@@ -174,6 +196,11 @@ export function normalizeFolder(path: string): string {
 /** A stored preview font size within IDEA's 8..72, or `null` (follow the editor font). */
 const previewSize = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? Math.min(72, Math.max(8, Math.round(v))) : null;
+/** Non-empty trimmed strings, without duplicates. */
+const strings = (v: unknown): string[] =>
+  Array.isArray(v)
+    ? [...new Set(v.filter((x): x is string => typeof x === "string").map((x) => x.trim()))].filter((x) => x)
+    : [];
 const folders = (v: unknown): string[] =>
   Array.isArray(v)
     ? [
@@ -229,7 +256,12 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       interpreter: text(node.interpreter, d.node.interpreter),
       packageManager: oneOf(node.packageManager, ["", "npm", "pnpm", "yarn", "bun"] as const, d.node.packageManager),
     },
-    php: { interpreter: text(php.interpreter, d.php.interpreter) },
+    php: {
+      interpreter: text(php.interpreter, d.php.interpreter),
+      languageLevel: oneOf(php.languageLevel, PHP_LANGUAGE_LEVELS, d.php.languageLevel),
+      includePaths: strings(php.includePaths),
+      stubs: strings(php.stubs),
+    },
     rust: {
       toolchain: text(rust.toolchain, d.rust.toolchain),
       stdlib: text(rust.stdlib, d.rust.stdlib),

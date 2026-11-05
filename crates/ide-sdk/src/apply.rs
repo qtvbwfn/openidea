@@ -349,7 +349,7 @@ pub fn tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
 
 const PYTHON_SERVERS: [&str; 7] = ["basedpyright", "pyright", "ty", "pyrefly", "pylsp", "jedi-language-server", "ruff"];
 
-fn merge(base: &mut Value, layer: Value) {
+pub(crate) fn merge(base: &mut Value, layer: Value) {
     match (base, layer) {
         (Value::Object(base), Value::Object(layer)) => {
             for (k, v) in layer {
@@ -610,6 +610,22 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         configure_vue_typescript(cfg, root, server_root, s);
     }
 
+    // Intelephense reads it as `intelephense.environment.phpVersion` (`workspace/configuration`).
+    if name == "intelephense"
+        && let Some(level) = crate::php::language_level(root, s)
+    {
+        merge_init_options(cfg, json!({ "environment": { "phpVersion": level.version } }));
+    }
+    if name == "intelephense" {
+        if let Some(stubs) = crate::php::intelephense_stubs(root, s) {
+            merge_init_options(cfg, json!({ "stubs": stubs }));
+        }
+        let include_paths = crate::php::include_paths(root, s);
+        if !include_paths.is_empty() {
+            merge_init_options(cfg, json!({ "environment": { "includePaths": include_paths } }));
+        }
+    }
+
     // Node-based servers (`#!/usr/bin/env node`) run on the selected Node.js.
     if let Some(dir) = node_dir(root, s) {
         path_dirs.push(dir);
@@ -676,6 +692,7 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        resync_on_configuration: false,
         pinned: None,
     }
 }
@@ -948,28 +965,22 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
                 if c.kind == "maven" {
+                    // A goal configuration saved from the tool window bakes in the
+                    // launcher that was current then — the literal `mvn` (#328),
+                    // the wrapper or the daemon. Those heal to the settings-
+                    // resolved launcher on every launch, so a later Maven home or
+                    // daemon change takes effect without editing each saved
+                    // config, and one saved while the daemon was on heals back
+                    // to mvn when it is turned off. A launcher the user wrote as
+                    // an absolute path is theirs and stays as configured (#1147).
                     if let Some(mvn) = &mvn
                         && (c.detected
                             || generated_maven_goal(c)
-                            || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat"))
+                            || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat" | "mvnd" | "mvnd.cmd"))
                     {
                         c.command = mvn.to_string_lossy().into_owned();
                     }
                     add_maven_options(&mut c.args, &mvn_options);
-                } else if c.kind == "maven"
-                    && let Some(mvn) = &mvn
-                    && is_maven_launcher(&c.command)
-                {
-                    // A goal configuration saved from the tool window bakes in the
-                    // launcher that was current then — the literal `mvn` (#328) or
-                    // its resolved absolute path. Matching by file name redirects
-                    // all of those to the settings-resolved launcher on every
-                    // launch: a later Maven home or daemon change takes effect
-                    // without editing each saved config, and one saved while the
-                    // daemon was on heals back to mvn when it is turned off.
-                    // Detected configs take the Maven options too, but the saved
-                    // ones already baked them into `args`.
-                    c.command = mvn.to_string_lossy().into_owned();
                 }
             }
             _ => {}
@@ -1046,14 +1057,6 @@ pub fn without_derived(config: &RunConfig, root: &Path, s: &Settings) -> RunConf
 
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
-}
-
-/// Whether `command` names one of the Maven launchers (`mvn`, the `mvnw` wrapper
-/// or `mvnd`), bare or as a full path — the shapes goal configurations saved from
-/// the tool window can carry.
-fn is_maven_launcher(command: &str) -> bool {
-    let name = Path::new(command).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    matches!(name.as_str(), "mvn" | "mvn.cmd" | "mvn.bat" | "mvnw" | "mvnw.cmd" | "mvnd" | "mvnd.cmd")
 }
 
 /// Command typed into a new terminal to activate the project virtualenv

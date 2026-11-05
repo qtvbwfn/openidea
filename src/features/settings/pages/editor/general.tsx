@@ -603,6 +603,12 @@ const GUTTER = editorPage({
               keywords: ["mybatis", "mapper", "xml statement"],
               component: () => <GutterGroup id="mybatis" label="MyBatis mapper statements" />,
             },
+            {
+              t: "custom",
+              label: "Color preview",
+              keywords: ["color", "swatch", "colour"],
+              component: () => <GutterGroup id="colors" label="Color preview" />,
+            },
           ],
         },
       ],

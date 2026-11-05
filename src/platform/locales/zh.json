@@ -340,6 +340,7 @@
   "menu.vcs.addToVcs": "添加到 VCS",
   "menu.vcs.compareWithBranch": "与分支或修订比较…",
   "menu.vcs.showHistory": "显示历史记录",
+  "menu.vcs.showHistoryForSelection": "显示所选内容的历史记录",
   "menu.build": "构建",
   "menu.build.buildProject": "构建项目",
   "menu.build.buildModule": "构建模块",
@@ -449,6 +450,8 @@
   "menu.editor.contextInfo": "上下文信息",
   "run.services.configurationCount": "{count} 个配置",
   "search.bookmarks.count": "{count} 个书签",
+  "search.find.matches": "在 {files} 个文件中有 {matches} 个匹配项",
+  "search.find.matchesIncomplete": "在 {files}+ 个文件中有 {matches}+ 个匹配项",
   "settings.zoom.hint": "使用 {zoomIn} 或 {zoomOut} 更改，使用 {reset} 重置为 100%",
   "All methods already have statements": "所有方法都已有 XML 语句",
   "Cancel": "取消",
@@ -470,5 +473,10 @@
   "The document changed; retry": "文档已变更，请重试",
   "Copy MyBatis SQL": "复制 MyBatis SQL",
   "The selection has no MyBatis SQL log to convert": "所选内容中没有可转换的 MyBatis SQL 日志",
-  "Could not copy to the clipboard": "无法写入剪贴板"
+  "Could not copy to the clipboard": "无法写入剪贴板",
+  "Configuration directory": "配置目录",
+  "The new directory is used after a restart.": "重启后使用新目录。",
+  "Restart": "重启",
+  "Configuration": "配置",
+  "No debug output available": "没有可用的调试输出"
 }

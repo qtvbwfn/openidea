@@ -2,8 +2,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEve
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { IconButton, showContextMenu, T, type MenuItem } from "@/ui";
+import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui";
 import { tx } from "@/platform/i18n";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { spanStyle } from "@/ui/ansi";
 import ansi from "@/ui/ansi.module.css";
 import type { ConsoleControls } from "@/features/run/RunView";
@@ -11,6 +12,15 @@ import { appendConsole, clearConsole, evaluate, isLive, useDebug, type DebugSess
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import styles from "./DebugToolWindow.module.css";
+
+export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
+  const session = useDebug((s) => s.sessions[sessionId]);
+  return session ? (
+    <DebugConsole key={sessionId} session={session} interactive={false} />
+  ) : (
+    <EmptyState title="No debug output available" />
+  );
+}
 
 export function DebugConsole({
   session,
@@ -26,7 +36,14 @@ export function DebugConsole({
 }) {
   const lines = useDebug((s) => s.console[session.id]);
   const scroller = useRef<HTMLDivElement>(null);
+  // Scroll to End: follows new output; scrolling up turns it off, back to the end turns it on.
+  const [follow, setFollow] = useState(true);
   const stick = useRef(true);
+  stick.current = follow;
+  // Settings › Console › Use soft wraps is the default; the toggle overrides it for this console.
+  const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
+  const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
+  const softWrap = wrapOverride ?? defaultWrap;
   const programmatic = useRef(false);
   const [input, setInput] = useState("");
   const history = useRef<string[]>(readHistory("console"));
@@ -42,14 +59,21 @@ export function DebugConsole({
     getItemKey: (i) => lines?.[i]?.id ?? i,
   });
 
+  // Wrapping changes every row's height; the end is pinned again below.
+  useLayoutEffect(() => virtualizer.measure?.(), [softWrap, virtualizer]);
+
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el || !stick.current || !lines?.length) return;
     programmatic.current = true;
     virtualizer.scrollToIndex(lines.length - 1, { align: "end" });
     el.scrollTop = el.scrollHeight;
-    requestAnimationFrame(() => (programmatic.current = false));
-  }, [lines, virtualizer]);
+    // Rows measured after this frame grow the content: pin the end once more.
+    requestAnimationFrame(() => {
+      if (stick.current) el.scrollTop = el.scrollHeight;
+      requestAnimationFrame(() => (programmatic.current = false));
+    });
+  }, [lines, virtualizer, follow, softWrap]);
 
   const submit = async () => {
     const e = input.trim();
@@ -81,8 +105,10 @@ export function DebugConsole({
         el.scrollTop = el.scrollHeight;
       },
       clear: () => clearConsole(session.id),
+      wrap: { on: softWrap, toggle: () => setWrapOverride(!softWrap) },
+      follow,
     }),
-    [session.id],
+    [softWrap, follow, session.id],
   );
   useEffect(() => {
     if (strip) return;
@@ -90,7 +116,6 @@ export function DebugConsole({
     return () => onControls?.(null);
   }, [strip, controls, onControls]);
   const scrollByPage = (dir: 1 | -1) => controls.scrollByPage(dir);
-  const scrollToEnd = () => controls.scrollToEnd();
 
   /** IDEA's Browse History popup: the expressions typed before, most recent first. */
   const browseHistory = () => {
@@ -130,11 +155,12 @@ export function DebugConsole({
       <div className={styles.consoleMain}>
         <div
           ref={scroller}
-          className={clsx(styles.consoleOutput, ansi.palette)}
+          className={clsx(styles.consoleOutput, ansi.palette, !softWrap && styles.noWrap)}
           onScroll={(e) => {
             if (programmatic.current) return;
             const el = e.currentTarget;
-            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+            const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+            if (atEnd !== stick.current) setFollow(atEnd);
           }}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -190,7 +216,7 @@ export function DebugConsole({
                   completion.onInput();
                 }}
                 onKeyDown={onKeyDown}
-                placeholder={isLive(session) ? tx("Evaluate in the debug console") : tx("Session finished")}
+                placeholder={isLive(session) ? "Evaluate in the debug console" : "Session finished"}
                 disabled={!isLive(session)}
                 aria-label={tx("Debug console input")}
                 spellCheck={false}
@@ -206,7 +232,20 @@ export function DebugConsole({
         <div className={styles.consoleStrip}>
           <IconButton icon="chevron-up" iconSize={14} title="Scroll Up" onClick={() => scrollByPage(-1)} />
           <IconButton icon="chevron-down" iconSize={14} title="Scroll Down" onClick={() => scrollByPage(1)} />
-          <IconButton icon="arrow-down" iconSize={14} title="Scroll to End" onClick={scrollToEnd} />
+          <IconButton
+            icon="soft-wrap"
+            iconSize={14}
+            title="Soft-Wrap"
+            pressed={softWrap}
+            onClick={() => setWrapOverride(!softWrap)}
+          />
+          <IconButton
+            icon="arrow-down"
+            iconSize={14}
+            title="Scroll to End"
+            pressed={follow}
+            onClick={() => setFollow((v) => !v)}
+          />
           <IconButton icon="trash" iconSize={14} title="Clear All" onClick={() => clearConsole(session.id)} />
         </div>
       )}

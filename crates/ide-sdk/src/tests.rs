@@ -38,6 +38,7 @@ fn server(name: &str) -> LanguageServerConfig {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        resync_on_configuration: false,
         pinned: None,
     }
 }
@@ -271,10 +272,8 @@ fn saved_maven_goal_configs_take_the_configured_launcher() {
     // own args are left alone.
     let mut saved = run("maven", "mvn", &["-s", "/m2/settings.xml", "clean"]);
     saved.detected = false;
-    // Launchers baked in by name — a custom absolute mvn, the project's
-    // wrapper — heal to the settings-resolved launcher on every launch, so a
-    // later Maven home or daemon switch takes effect without editing each
-    // saved config.
+    // A launcher the user wrote as an absolute path or the project's wrapper
+    // is theirs and stays as configured (#1147).
     let mut custom = run("maven", "/opt/other/bin/mvn", &["package"]);
     custom.detected = false;
     let mut wrapper = run("maven", "./mvnw", &["package"]);
@@ -283,8 +282,8 @@ fn saved_maven_goal_configs_take_the_configured_launcher() {
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].command, maven.join("bin/mvn").to_string_lossy());
     assert_eq!(configs[0].args, ["-s", "/m2/settings.xml", "clean"], "saved args are kept");
-    assert_eq!(configs[1].command, maven.join("bin/mvn").to_string_lossy());
-    assert_eq!(configs[2].command, maven.join("bin/mvn").to_string_lossy());
+    assert_eq!(configs[1].command, "/opt/other/bin/mvn");
+    assert_eq!(configs[2].command, "./mvnw");
 }
 
 #[test]
@@ -1294,6 +1293,61 @@ fn php_sources_and_selected_interpreter() {
     }
     assert_eq!(configs[1].command, "vendor/bin/phpunit");
     assert!(configs[3].env.get("PATH").is_none_or(|p| !p.contains("php82")));
+}
+
+#[test]
+fn intelephense_gets_the_php_language_level() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    let configured = |name: &str, s: &Settings| {
+        let mut cfg = server(name);
+        configure_server(&mut cfg, tmp.path(), tmp.path(), s);
+        cfg
+    };
+    let options = |cfg: LanguageServerConfig| serde_json::to_value(cfg.initialization_options).unwrap();
+
+    // Nothing to resolve: the options stay as they were (the rest depends on the machine's tools).
+    assert_eq!(configured("intelephense", &Settings::default()).initialization_options, None);
+
+    std::fs::write(tmp.path().join("composer.json"), r#"{"require": {"php": "^7.4 || ^8.0"}}"#).unwrap();
+    assert_eq!(
+        options(configured("intelephense", &Settings::default())),
+        json!({"environment": {"phpVersion": "7.4.0"}})
+    );
+    for other in ["phpactor", "basedpyright", "vtsls"] {
+        assert_eq!(options(configured(other, &Settings::default())).get("environment"), None, "{other}");
+    }
+
+    let mut s = Settings::default();
+    s.languages.php.language_level = "8.1".into();
+    let mut cfg = server("intelephense");
+    cfg.initialization_options = Some(toml::Value::try_from(json!({"clearCache": true})).unwrap());
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(options(cfg), json!({"clearCache": true, "environment": {"phpVersion": "8.1.0"}}));
+}
+
+#[test]
+fn intelephense_gets_the_required_stubs_and_include_paths() {
+    use serde_json::json;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("composer.json"), r#"{"require": {"php": "^8.1", "ext-redis": "*"}}"#).unwrap();
+    let mut s = Settings::default();
+    s.languages.php.stubs = vec!["wordpress".into()];
+    s.languages.php.include_paths = vec!["../platform".into()];
+    let mut cfg = server("intelephense");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    let options = serde_json::to_value(cfg.initialization_options).unwrap();
+    let stubs: Vec<&str> = options["stubs"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+    assert_eq!(stubs.len(), 70);
+    assert_eq!((stubs[0], &stubs[68..]), ("apache", &["redis", "wordpress"][..]));
+    assert_eq!(
+        options["environment"],
+        json!({"phpVersion": "8.1.0", "includePaths": [tmp.path().join("../platform").to_string_lossy()]})
+    );
+
+    let mut other = server("phpactor");
+    configure_server(&mut other, tmp.path(), tmp.path(), &s);
+    assert_eq!(other.initialization_options, None);
 }
 
 #[test]

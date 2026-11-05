@@ -609,8 +609,9 @@ fn providers_of_several_plugins_run_concurrently() {
         text: text.into(),
     };
     let at = ide_core::Pos::new(0, 0);
-    // Activation is not what is measured.
-    assert_eq!(host.provide_completion(&doc("fast"), at, None).len(), 2);
+    // Activation is not what is measured: a first call that starts an instance
+    // can run past the edit-path budget, and its answer is dropped.
+    assert!(eventually(|| host.provide_completion(&doc("fast"), at, None).len() == 2));
 
     let started = Instant::now();
     let items = host.provide_completion(&doc("sleep:500"), at, None);
@@ -1676,22 +1677,21 @@ fn official_ai_completion_cancels_superseded_requests() {
     };
     let at = ide_core::Pos::new(1, 4);
     let host = Arc::new(f);
-    // A slow request, superseded 200 ms later by the next keystroke's.
+    // A slow request, superseded by the next keystroke's once the server has it
+    // (starting the instance comes first, and takes longer on a slow runner).
     let first = ide_core::CancellationToken::new();
     let slow = {
         let (host, doc, first) = (host.clone(), doc.clone(), first.clone());
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            let r = host.host.provide_inline_completion(&doc, at, &first);
-            (r, started.elapsed())
-        })
+        std::thread::spawn(move || (host.host.provide_inline_completion(&doc, at, &first), Instant::now()))
     };
-    std::thread::sleep(Duration::from_millis(200));
+    assert!(eventually(|| seen.lock().len() == 1), "the first request reaches the server");
+    let cancelled = Instant::now();
     first.cancel();
     let started = Instant::now();
     let second = host.host.provide_inline_completion(&doc, at, &ide_core::CancellationToken::new());
     let took = started.elapsed();
-    let (old, old_took) = slow.join().unwrap();
+    let (old, old_done) = slow.join().unwrap();
+    let old_took = old_done.saturating_duration_since(cancelled);
     assert!(old.is_none(), "the superseded request yields nothing");
     assert!(old_took < Duration::from_secs(1), "cancelled, not waited out: {old_took:?}");
     assert_eq!(second.map(|(_, s)| s.insert_text).as_deref(), Some("a + b"));
@@ -1869,7 +1869,12 @@ fn official_mybatis_navigates_between_interface_and_xml() {
     assert_eq!((target.path, target.range.start), (xml_path.clone(), ide_core::Pos::new(1, 14)));
 
     let xdoc = doc(&xml_path, "xml", xml);
-    let to_java = f.host.provide_definition(&xdoc, ide_core::Pos::new(1, 16));
+    // Reads the interface from disk: on a slow machine that too can run past the budget.
+    let mut to_java = Vec::new();
+    assert!(eventually(|| {
+        to_java = f.host.provide_definition(&xdoc, ide_core::Pos::new(1, 16));
+        !to_java.is_empty()
+    }));
     assert_eq!(
         to_java.iter().map(|l| (l.path.clone(), l.range.start)).collect::<Vec<_>>(),
         [(java_path.clone(), ide_core::Pos::new(3, 9))]
@@ -2038,6 +2043,83 @@ fn pinned_programs_fill_views_and_open_terminals() {
     let (_, title, _, args) = open("build").expect("a terminal");
     assert_eq!(title, "tail build");
     assert_eq!(args, ["follow", "build", "--lines=5"]);
+}
+
+#[test]
+fn views_open_project_files_at_a_line() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("jobs"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    std::fs::write(f.project.join("jobs.log"), "build\ndeploy\nfailed\n").unwrap();
+    let press = |button: &str| {
+        f.take_events();
+        let result = f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Button { id: button.into() }, f.inv());
+        let opened = f.take_events().into_iter().find_map(|(client, e)| match e {
+            PluginEvent::OpenLocation { path, line, column, .. } => Some((client, path.0, line, column)),
+            _ => None,
+        });
+        (result, opened)
+    };
+
+    let (result, opened) = press("log");
+    assert!(result.is_ok(), "{result:?}");
+    let (client, path, line, column) = opened.expect("a location");
+    assert_eq!((client.as_deref(), line, column), (Some("main"), 2, 4));
+    assert_eq!(path.canonicalize().unwrap(), f.project.join("jobs.log").canonicalize().unwrap());
+
+    let (result, opened) = press("outside");
+    assert!(result.is_err(), "a path outside the project is refused");
+    assert!(opened.is_none());
+
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    let (result, opened) = press("log");
+    assert!(result.unwrap_err().message.contains("project.read"), "needs project.read");
+    assert!(opened.is_none());
+}
+
+#[test]
+fn views_can_use_an_svg_icon_from_the_package() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let clean = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="#08f"/></svg>"##;
+    let package = |dir: &str, icon: &str, svg: &str| {
+        let pkg = tmp.path().join(dir);
+        for (path, text) in [("panel/index.html", "<p>panel</p>"), ("icons/panel.svg", svg)] {
+            std::fs::create_dir_all(pkg.join(path).parent().unwrap()).unwrap();
+            std::fs::write(pkg.join(path), text).unwrap();
+        }
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                r#"id = "panel-icon"
+name = "Panel Icon"
+version = "1.0.0"
+engines.openidea = "^1.0"
+
+[[contributes.views]]
+id = "panel"
+title = "Panel"
+icon = "{icon}"
+location = "bottom"
+web = "panel/index.html"
+"#
+            ),
+        )
+        .unwrap();
+        pkg
+    };
+
+    assert!(f.host.install_from_dir(&package("missing", "icons/missing.svg", clean), &Consent::all()).is_err());
+    let scripted = clean.replace("<rect", "<script>alert(1)</script><rect");
+    assert!(f.host.install_from_dir(&package("scripted", "icons/panel.svg", &scripted), &Consent::all()).is_err());
+
+    let info = f.install(&package("clean", "icons/panel.svg", clean));
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let view = f.host.ui_items("views").into_iter().find(|v| v.key == "panel").expect("the view");
+    assert_eq!(view.decl["icon"].as_str(), Some("icons/panel.svg"));
+    let assets = f.host.assets("panel-icon", "viewIcon/panel").unwrap();
+    assert_eq!(assets.len(), 1);
+    assert!(assets[0].1.contains("<rect"));
 }
 
 /// A plugin with web views and no code: its pages and their files are
@@ -2437,7 +2519,12 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     };
     let at = ide_core::Pos::new(0, 0);
 
-    let items = f.host.provide_completion(&doc("rich"), at, None);
+    // The first call starts the instance, which may take longer than the edit-path budget.
+    let mut items = Vec::new();
+    assert!(eventually(|| {
+        items = f.host.provide_completion(&doc("rich"), at, None);
+        !items.is_empty()
+    }));
     let item = &items[0].1;
     assert_eq!(
         (item.insert_text.as_str(), item.snippet, item.filter_text.as_deref()),

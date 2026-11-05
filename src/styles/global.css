@@ -41,6 +41,8 @@ html[data-selection-lock] *:not([data-selection-scope], [data-selection-scope] *
 input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"]),
 textarea,
 [contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
   cursor: text;
 }
 
@@ -194,7 +196,7 @@ a:hover {
 }
 .tok-comment {
   color: var(--syn-comment);
-  font-style: italic;
+  font-style: var(--syn-comment-style);
 }
 .tok-meta,
 .tok-macroName {
