@@ -27,7 +27,9 @@ OpenIDEA brings the IntelliJ IDEA way of working — its keymap, its tool window
 its search-everything habits — to a native app with a Rust core.
 
 Editor, code insight, debugger, Git, terminal, database and HTTP clients,
-for 60+ languages. Builds for macOS, Windows and Linux.
+for 60+ languages. Builds for macOS, Windows and Linux. On Windows, if you'd
+rather skip the installer, each release also ships a portable zip — unpack it
+and run `openidea.exe`.
 
 ## Benchmark
 
@@ -88,8 +90,18 @@ it, and on the next start a dialog offers to move the existing data there
 trash). "Reset to default" moves everything back the same way. The
 `OPENIDEA_HOME` environment variable does the same and takes precedence.
 
+### Contributors
+
+<a href="https://github.com/l0ng-ai/openidea/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=l0ng-ai/openidea&max=100" alt="OpenIDEA contributors">
+</a>
+
 ## License
 
 [Apache 2.0](LICENSE). Bundled third-party assets are listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+
+Database tool window notes, including Oracle Instant Client setup, are in
+[`docs/databases.md`](docs/databases.md).
+Java language server choices and their capabilities are in [`docs/java.md`](docs/java.md).
 
 <sub>Not affiliated with JetBrains. IntelliJ IDEA is a trademark of JetBrains s.r.o.</sub>

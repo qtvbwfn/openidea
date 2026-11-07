@@ -313,7 +313,8 @@ pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) 
     Ok(project_info(&project))
 }
 
-#[tauri::command]
+// Not on the main thread: closing stops the project's language servers, runs and file watcher.
+#[tauri::command(async)]
 #[specta::specta]
 pub fn close_project(window: Window, state: State<'_, AppState>) {
     crate::windows::close_auxiliary_windows(window.app_handle(), window.label());
@@ -495,6 +496,13 @@ pub async fn project_trust_set(
         state.plugins.restrict_project(&dunce::canonicalize(&path).unwrap_or(path));
     }
     Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn project_trust_add_location(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
+    state.trust.add_location(&path)?;
+    state.host.refresh_project_trust().await
 }
 
 #[tauri::command]

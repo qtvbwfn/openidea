@@ -97,6 +97,7 @@ const BUILT_AT_RUNTIME = new Set<string>([
 const UNTRANSLATED = new Set<string>([
   "dotnet test",
   "netcoredbg (.NET)",
+  "php-debug (PHP)",
   // Product names
   "Cargo",
   "CMake",
@@ -104,7 +105,12 @@ const UNTRANSLATED = new Set<string>([
   "oxfmt",
   "Ruff",
   "IntelliJ IDEA",
+  "GitHub",
   "PHPStan",
+  "Xdebug",
+  // Docker run target placeholder values
+  "compose.yaml",
+  "python:3.12",
   // Go environment variables and placeholder values
   "CGO",
   "GOPROXY",
@@ -172,6 +178,7 @@ const UNTRANSLATED = new Set<string>([
   "Python",
   "npm",
   "OpenIDEA",
+  "Oracle",
   "Spring Boot",
   "PostgreSQL",
   "Pyrefly",
