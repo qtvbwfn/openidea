@@ -295,9 +295,16 @@ describe("rename helpers", () => {
 describe("navigation wiring", () => {
   it("respects an empty server answer", async () => {
     cmd.lspGoto.mockReturnValueOnce(ok([]));
+    // The caret sits on the `x` usage: locals says notLocal, so the flow
+    // consults the project index (which the mock leaves empty) before the
+    // hint shows.
+    cmd.syntaxLocals.mockReturnValueOnce(
+      ok({ status: "notLocal", name: "x", range: r(1, 0, 1), reason: "unresolved" }),
+    );
     const view = editor("const x = 1;\nx;", "typescript", 13);
     await gotoTargets(view, "definition");
-    expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+    expect(cmd.indexGoto).toHaveBeenCalled();
+    expect(cmd.syntaxLocals).toHaveBeenCalled();
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Cannot find declaration to go to");
   });
 
