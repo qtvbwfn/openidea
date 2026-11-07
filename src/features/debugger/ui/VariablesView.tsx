@@ -5,7 +5,6 @@ import { call, commands, type DebugSessionId, type Variable } from "@/platform/i
 import { Dialog, Icon, Tree, acquirePopup, showContextMenu, type MenuItem, type TreeHandle } from "@/ui";
 import { formatMessage, tx } from "@/platform/i18n";
 import { activeEditor } from "@/editor/api";
-import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
 import { addFieldWatchpoint } from "../breakpoints/special";
 import { methodAt } from "../breakpoints/symbols";
