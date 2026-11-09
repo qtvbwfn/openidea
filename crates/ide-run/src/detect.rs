@@ -7,6 +7,7 @@ pub(crate) mod cmake;
 mod dotnet;
 
 use crate::RunConfig;
+use ide_core::project_roots::expand_members;
 use serde_json::Value as Json;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -61,7 +62,7 @@ pub(crate) fn detect_with_profiles(
                 config.id = scope.id(&config.id);
                 config.name = scope.name(&config.name);
                 for task in &mut config.extras.before_launch {
-                    if task.kind == "run" {
+                    if matches!(task.kind.as_str(), "run" | "build") && !task.target.is_empty() {
                         task.target = scope.id(&task.target);
                     }
                 }
@@ -213,33 +214,6 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
     ide_core::project_roots::children(dir)
 }
 
-/// Expands workspace member patterns one level deep: `dir`, `dir/*`, `dir/**`.
-fn expand_members(root: &Path, patterns: &[String], marker: &str) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    for pattern in patterns {
-        let pattern = pattern.trim().trim_start_matches("./").trim_end_matches('/');
-        if pattern.is_empty() || pattern.starts_with('!') {
-            continue;
-        }
-        let base = pattern.strip_suffix("/**").or_else(|| pattern.strip_suffix("/*"));
-        match base {
-            Some(base) if !base.contains('*') => {
-                dirs.extend(subdirs(&root.join(base)).into_iter().filter(|d| d.join(marker).is_file()))
-            }
-            None if !pattern.contains('*') => {
-                let dir = root.join(pattern);
-                if dir.join(marker).is_file() {
-                    dirs.push(dir);
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut seen = HashSet::new();
-    dirs.retain(|d| seen.insert(d.clone()));
-    dirs
-}
-
 fn relative(root: &Path, dir: &Path) -> PathBuf {
     dir.strip_prefix(root).map(Path::to_path_buf).unwrap_or_else(|_| dir.to_path_buf())
 }
@@ -273,33 +247,6 @@ fn push_scripts(pkg: &Json, pm: &str, prefix: Option<&str>, cwd: Option<PathBuf>
     }
 }
 
-fn node_workspace_patterns(root: &Path, pkg: &Json) -> Vec<String> {
-    let mut patterns: Vec<String> = Vec::new();
-    let ws = pkg.get("workspaces");
-    let list = ws.and_then(Json::as_array).or_else(|| ws.and_then(|w| w.get("packages")).and_then(Json::as_array));
-    if let Some(list) = list {
-        patterns.extend(list.iter().filter_map(Json::as_str).map(str::to_owned));
-    }
-    if let Some(yaml) = read(&root.join("pnpm-workspace.yaml")) {
-        let mut in_packages = false;
-        for line in yaml.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            if !line.starts_with([' ', '\t', '-']) {
-                in_packages = trimmed.starts_with("packages:");
-                continue;
-            }
-            if in_packages && let Some(item) = trimmed.strip_prefix('-') {
-                let item = item.split(" #").next().unwrap_or_default().trim().trim_matches(['"', '\'']);
-                patterns.push(item.to_owned());
-            }
-        }
-    }
-    patterns
-}
-
 fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
     let mut covered = HashSet::new();
     let projects =
@@ -315,7 +262,7 @@ fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
         let rel = relative(root, &dir);
         let label = ide_core::ipc_path::to_ipc(&rel);
         push_scripts(&pkg, pm, (dir != root).then_some(label.as_str()), (dir != root).then_some(rel), out);
-        for member_dir in expand_members(&dir, &node_workspace_patterns(&dir, &pkg), "package.json") {
+        for member_dir in ide_core::project_roots::node_workspace_members(&dir) {
             if !covered.insert(member_dir.clone()) {
                 continue;
             }
@@ -1047,10 +994,15 @@ fn is_composer_event(name: &str) -> bool {
     name.starts_with("pre-") || name.starts_with("post-") || name == "command"
 }
 
-/// The PHPUnit entry point: the project's `vendor/bin/phpunit`, else a global `phpunit`.
-fn phpunit_command(root: &Path) -> String {
-    let bin = if cfg!(windows) { "vendor/bin/phpunit.bat" } else { "vendor/bin/phpunit" };
-    if root.join(bin).is_file() { bin.to_owned() } else { "phpunit".to_owned() }
+/// The PHPUnit entry point: the project's `vendor/bin/pest` or `vendor/bin/phpunit`, else a global `phpunit`.
+fn phpunit_command(root: &Path) -> (String, &'static str) {
+    for (runner, label) in [("pest", "Pest"), ("phpunit", "PHPUnit")] {
+        let bin = format!("vendor/bin/{runner}{}", if cfg!(windows) { ".bat" } else { "" });
+        if root.join(&bin).is_file() {
+            return (bin, label);
+        }
+    }
+    ("phpunit".to_owned(), "PHPUnit")
 }
 
 /// Composer projects (`composer.json`) and PHPUnit suites (`phpunit.xml`, `phpunit.xml.dist`).
@@ -1084,8 +1036,14 @@ fn detect_php(root: &Path, out: &mut Vec<RunConfig>) {
         );
         out.push(if name == "test" { c.test() } else { c });
     }
-    if phpunit_xml.is_some() || requires("phpunit/phpunit") || root.join("vendor/bin/phpunit").is_file() {
-        let mut c = config("phpunit", "PHPUnit", "phpunit", &phpunit_command(root), &[]).test().debug("php-debug");
+    if phpunit_xml.is_some()
+        || requires("phpunit/phpunit")
+        || requires("pestphp/pest")
+        || root.join("vendor/bin/phpunit").is_file()
+        || root.join("vendor/bin/pest").is_file()
+    {
+        let (command, label) = phpunit_command(root);
+        let mut c = config("phpunit", label, "phpunit", &command, &[]).test().debug("php-debug");
         // A configuration file with a non-default name must be passed explicitly.
         let named = phpunit_xml.as_deref().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned());
         if let Some(file) = named.filter(|f| f == "phpunit.dist.xml") {
@@ -1211,6 +1169,7 @@ fn detect_ruby(root: &Path, out: &mut Vec<RunConfig>) {
             ("ruby".into(), Vec::new()),
             &["bin/rails", "server"],
         );
+        c = c.debug("rdbg");
         c.extras.folder = Some("Rails".into());
         out.push(c);
     }
@@ -1223,12 +1182,15 @@ fn detect_ruby(root: &Path, out: &mut Vec<RunConfig>) {
             if task == "test" || task == "spec" || task.ends_with(":test") || task.ends_with(":spec") {
                 c = c.test();
             }
+            c = c.debug("rdbg");
             c.extras.folder = Some("Rake".into());
             out.push(c);
         }
     }
     if uses_rspec(root) {
-        out.push(ruby_config("rspec".into(), "rspec".into(), "rspec", ruby_tool(root, "rspec"), &[]).test());
+        out.push(
+            ruby_config("rspec".into(), "rspec".into(), "rspec", ruby_tool(root, "rspec"), &[]).test().debug("rdbg"),
+        );
     } else if root.join("test").is_dir() && !out.iter().any(|c| c.id == "rake:test") {
         // Minitest / Test::Unit without a `test` Rake task: load every test file under `test/`.
         let mut args = Vec::new();
@@ -1239,7 +1201,11 @@ fn detect_ruby(root: &Path, out: &mut Vec<RunConfig>) {
         }
         args.extend(["-e".to_owned(), MINITEST_RUNNER.to_owned(), "test".to_owned()]);
         let extra: Vec<&str> = args.iter().map(String::as_str).collect();
-        out.push(ruby_config("minitest".into(), "minitest".into(), "ruby", ruby_tool(root, "ruby"), &extra).test());
+        out.push(
+            ruby_config("minitest".into(), "minitest".into(), "ruby", ruby_tool(root, "ruby"), &extra)
+                .test()
+                .debug("rdbg"),
+        );
     }
 }
 

@@ -144,6 +144,24 @@ pub fn project_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
     }
 }
 
+/// Module-specific JDK from `projectStructure.modules`, falling back to [`project_jdk`].
+pub fn module_jdk(root: &Path, module: &Path, s: &Settings) -> Option<crate::java::Jdk> {
+    let module_cfg = s.project_structure.module_settings(root, module);
+    if let Some(cfg) = module_cfg
+        && let Some(jdk) = jdk_setting(root, &cfg.jdk)
+    {
+        return jdk.inspect_err(|p| tracing::warn!("module JDK {}", not_a_jdk(p))).ok();
+    }
+    project_jdk(root, s)
+}
+
+/// Effective Java language level (`8`, `11`, `17`, `21`, `25`) for `module`, checking
+/// `projectStructure.modules` first, then `languages.java.languageLevel`.
+pub fn effective_java_language_level<'a>(root: &Path, module: &Path, s: &'a Settings) -> Option<&'a str> {
+    let module_level = s.project_structure.module_settings(root, module).and_then(|m| non_empty(&m.language_level));
+    module_level.or_else(|| non_empty(&s.languages.java.language_level))
+}
+
 /// The JDK chosen to run jdtls (`languages.java.jdtlsJdk`): `Ok(None)` when not
 /// set, `Err` (the message) when it is not a JDK home.
 pub fn jdtls_jdk(root: &Path, s: &Settings) -> Result<Option<crate::java::Jdk>, String> {
@@ -152,7 +170,10 @@ pub fn jdtls_jdk(root: &Path, s: &Settings) -> Result<Option<crate::java::Jdk>, 
         Some(Ok(jdk)) if !ide_core::java_runtime::supports_java_bundles(&jdk.home) => {
             Err(crate::java::server_jdk_incomplete_message(&jdk, jdk.major.max(crate::java::JDTLS_MIN_JAVA)))
         }
-        Some(Ok(jdk)) => Ok(Some(jdk)),
+        Some(Ok(jdk)) => match crate::java::java_execution_error(&crate::java::java_executable(&jdk.home)) {
+            Some(error) => Err(error),
+            None => Ok(Some(jdk)),
+        },
         Some(Err(p)) => {
             Err(format!("The language server JDK {} (Settings › Languages & Frameworks › Java).", not_a_jdk(&p)))
         }
@@ -169,19 +190,37 @@ fn not_a_jdk(p: &Path) -> String {
     }
 }
 
+/// Maven runner JRE, falling back to the project JDK and then the POM's Java version.
+pub fn maven_jdk(root: &Path, s: &Settings, release: Option<u32>) -> Option<crate::java::Jdk> {
+    match jdk_setting(root, &s.languages.java.maven.runner_jre) {
+        Some(jdk) => jdk.inspect_err(|p| tracing::warn!("Maven runner JRE {}", not_a_jdk(p))).ok(),
+        None => project_jdk(root, s).or_else(|| {
+            let installed = crate::java::installed_jdks();
+            release.and_then(|r| crate::java::pick_jdk(&installed, Some(r))).cloned()
+        }),
+    }
+}
+
+/// Default environment shared by Maven sync, builds and run configurations.
+pub fn maven_build_env(root: &Path, s: &Settings, release: Option<u32>) -> std::collections::BTreeMap<String, String> {
+    maven_jdk(root, s, release)
+        .map(|jdk| std::collections::BTreeMap::from([("JAVA_HOME".into(), jdk.home.to_string_lossy().into_owned())]))
+        .unwrap_or_default()
+}
+
 /// `mvn` of the configured Maven home (`languages.java.maven.home`): the
 /// executable itself, `<home>/bin/mvn` or `<bin>/mvn`; else of the Maven the project
 /// pins for mise / asdf when it has no Maven wrapper. With `maven.daemon` on, the
 /// Maven Daemon (`mvnd`) replaces all of that — it embeds its own Maven — unless
-/// it is not installed or the project JDK is older than the Java 17 its daemon
+/// it is not installed or the runner JRE is older than the Java 17 its daemon
 /// needs, in which case the build stays on mvn (with a logged warning).
 pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
     if s.languages.java.maven.daemon {
         match mvnd_command(root, s) {
-            // No project JDK at all lets mvnd pick its own Java, which may still be new enough.
-            Some(mvnd) if project_jdk(root, s).is_none_or(|j| j.major >= 17) => return Some(mvnd),
+            // Without a selected JDK, mvnd picks its own Java, which may still be new enough.
+            Some(mvnd) if maven_jdk(root, s, None).is_none_or(|j| j.major >= 17) => return Some(mvnd),
             Some(_) => tracing::warn!(
-                "Maven daemon: the project JDK is older than the Java 17 its daemon needs; building with mvn"
+                "Maven daemon: the runner JRE is older than the Java 17 its daemon needs; building with mvn"
             ),
             None => tracing::warn!("Maven daemon is enabled but mvnd was not found; building with mvn"),
         }
@@ -372,12 +411,15 @@ pub fn gradle_env(
 }
 
 /// Maven options from settings, placed before the goals: `-s <settings.xml>`,
-/// `-Dmaven.repo.local=<dir>` and `-T <count>` (the thread count).
+/// `-t <toolchains.xml>`, `-Dmaven.repo.local=<dir>`, `-T <count>` and `-P <profiles>`.
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     let m = &s.languages.java.maven;
     let mut out = Vec::new();
     if let Some(file) = setting_path(root, &m.user_settings) {
         out.extend(["-s".to_owned(), file.to_string_lossy().into_owned()]);
+    }
+    if let Some(file) = setting_path(root, &m.toolchains) {
+        out.extend(["-t".to_owned(), file.to_string_lossy().into_owned()]);
     }
     if let Some(dir) = setting_path(root, &m.local_repository) {
         out.push(format!("-Dmaven.repo.local={}", dir.to_string_lossy()));
@@ -385,20 +427,18 @@ pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     if let Some(threads) = m.thread_count() {
         out.extend(["-T".to_owned(), threads.to_owned()]);
     }
+    if let Some(profiles) = non_empty(&m.active_profiles) {
+        out.extend(["-P".to_owned(), profiles.to_owned()]);
+    }
     out
 }
 
 fn maven_settings_prefixes(args: &[String]) -> Vec<usize> {
     let mut prefixes = vec![0];
     let mut i = 0;
-    while let Some(arg) = args.get(i) {
-        if (arg == "-s" || arg == "-T") && args.get(i + 1).is_some() {
-            i += 2;
-        } else if arg.starts_with("-Dmaven.repo.local=") {
-            i += 1;
-        } else {
-            break;
-        }
+    while i < args.len() {
+        let Some(n) = maven_option_len(&args[i..]) else { break };
+        i += n;
         prefixes.push(i);
     }
     prefixes
@@ -640,16 +680,43 @@ fn missing_serial_version(inspections: &InspectionSettings) -> Option<&'static s
 /// Workspace compiler defaults; Eclipse project preferences still take precedence.
 /// Each variant has its own file, so changing an inspection restarts the server with it.
 pub fn configure_java_compiler(cfg: &mut LanguageServerConfig, data_dir: &Path, inspections: &InspectionSettings) {
+    configure_java_compiler_with_level(cfg, data_dir, inspections, None);
+}
+
+/// Like [`configure_java_compiler`], also applying the Project Structure Java language level
+/// (`source`, `compliance`, `codegen.targetPlatform`) when configured.
+pub fn configure_java_compiler_with_level(
+    cfg: &mut LanguageServerConfig,
+    data_dir: &Path,
+    inspections: &InspectionSettings,
+    language_level: Option<&str>,
+) {
     const DEFAULTS: &str = "org.eclipse.jdt.core.compiler.problem.forbiddenReference=warning\n\
 org.eclipse.jdt.core.compiler.problem.discouragedReference=warning\n";
     let serial = missing_serial_version(inspections);
-    let (name, content) = match serial {
-        None => ("compiler-defaults.prefs".to_owned(), DEFAULTS.to_owned()),
-        Some(level) => (
-            format!("compiler-defaults-serial-{level}.prefs"),
-            format!("{DEFAULTS}org.eclipse.jdt.core.compiler.problem.missingSerialVersion={level}\n"),
-        ),
-    };
+    let normalized_level = language_level.map(str::trim).and_then(|l| match l {
+        "8" | "1.8" => Some(("8", "1.8")),
+        "11" => Some(("11", "11")),
+        "17" => Some(("17", "17")),
+        "21" => Some(("21", "21")),
+        "25" => Some(("25", "25")),
+        _ => None,
+    });
+    let mut stem = "compiler-defaults".to_owned();
+    let mut content = DEFAULTS.to_owned();
+    if let Some(level) = serial {
+        stem.push_str(&format!("-serial-{level}"));
+        content.push_str(&format!("org.eclipse.jdt.core.compiler.problem.missingSerialVersion={level}\n"));
+    }
+    if let Some((tag, jdt_ver)) = normalized_level {
+        stem.push_str(&format!("-level-{tag}"));
+        content.push_str(&format!(
+            "org.eclipse.jdt.core.compiler.source={jdt_ver}\n\
+org.eclipse.jdt.core.compiler.compliance={jdt_ver}\n\
+org.eclipse.jdt.core.compiler.codegen.targetPlatform={jdt_ver}\n"
+        ));
+    }
+    let name = format!("{stem}.prefs");
     let file = data_dir.join("lsp/jdtls").join(name);
     let write = || -> ide_core::IdeResult<()> {
         std::fs::create_dir_all(file.parent().expect("compiler preferences directory"))?;
@@ -1047,49 +1114,68 @@ fn is_python_command(cmd: &str) -> bool {
 
 const PY_RUNNERS: [&str; 3] = ["uv", "poetry", "pdm"];
 
-/// [`maven_options`] as the groups they are passed in (`-s <file>`, `-Dmaven.repo.local=…`,
-/// `-T <count>`).
+fn maven_option_flag(arg: &str) -> Option<&'static str> {
+    for (short, long) in
+        [("-s", "--settings"), ("-t", "--toolchains"), ("-T", "--threads"), ("-P", "--activate-profiles")]
+    {
+        if arg.starts_with(short) || arg == long || arg.starts_with(&format!("{long}=")) {
+            return Some(short);
+        }
+    }
+    arg.starts_with("-Dmaven.repo.local=").then_some("-Dmaven.repo.local")
+}
+
+fn maven_option_len(args: &[String]) -> Option<usize> {
+    let arg = args.first()?;
+    maven_option_flag(arg)?;
+    let separate = matches!(
+        arg.as_str(),
+        "-s" | "--settings" | "-t" | "--toolchains" | "-T" | "--threads" | "-P" | "--activate-profiles"
+    );
+    Some(if separate { 2.min(args.len()) } else { 1 })
+}
+
+/// [`maven_options`] grouped with each option's value.
 fn maven_option_groups(options: &[String]) -> Vec<&[String]> {
     let mut groups = Vec::new();
     let mut i = 0;
     while i < options.len() {
-        let n = if options[i] == "-s" || options[i] == "-T" { 2.min(options.len() - i) } else { 1 };
+        let n = maven_option_len(&options[i..]).unwrap_or(1);
         groups.push(&options[i..i + n]);
         i += n;
     }
     groups
 }
 
-/// Whether `args` set what `group` sets: a user settings file, the local
-/// repository, or the thread count.
+/// Whether the configuration sets the same option, including attached and long forms.
 fn sets_maven_option(args: &[String], group: &[String]) -> bool {
-    match group.first().map(String::as_str) {
-        Some("-s") => args.iter().any(|a| a == "-s" || a == "--settings" || a.starts_with("--settings=")),
-        // `-T 4`, `--threads 4`, `-T4` and `--threads=4` all set the thread count.
-        Some("-T") => args.iter().any(|a| {
-            a == "-T" || a == "--threads" || a.starts_with("--threads=") || (a.starts_with("-T") && a.len() > 2)
-        }),
-        Some(flag) => {
-            let key = flag.split_once('=').map_or(flag, |(k, _)| k);
-            args.iter().any(|a| a.split_once('=').map_or(a.as_str(), |(k, _)| k) == key)
-                || args
-                    .windows(2)
-                    .any(|a| a[0] == "-D" && format!("-D{}", a[1].split('=').next().unwrap_or_default()) == key)
-        }
-        None => true,
-    }
+    let Some(flag) = group.first().and_then(|a| maven_option_flag(a)) else { return true };
+    args.iter().any(|a| maven_option_flag(a) == Some(flag))
+        || (flag == "-Dmaven.repo.local"
+            && args.windows(2).any(|a| a[0] == "-D" && a[1].starts_with("maven.repo.local=")))
 }
 
-/// Settings › Maven's options ahead of the goals, each unless the configuration sets it itself.
-fn add_maven_options(args: &mut Vec<String>, options: &[String]) {
-    let missing: Vec<String> =
-        maven_option_groups(options).into_iter().filter(|g| !sets_maven_option(args, g)).flatten().cloned().collect();
+/// Settings options precede the goals. Tool-window checkbox profiles are additive;
+/// profiles explicitly typed in the configuration replace the Settings profiles.
+fn add_maven_options(args: &mut Vec<String>, options: &[String], additive_profiles: bool) {
+    let missing: Vec<String> = maven_option_groups(options)
+        .into_iter()
+        .filter(|g| {
+            if additive_profiles && g[0] == "-P" {
+                !args.windows(g.len()).any(|w| w == *g)
+            } else {
+                !sets_maven_option(args, g)
+            }
+        })
+        .flatten()
+        .cloned()
+        .collect();
     args.splice(0..0, missing);
 }
 
 /// Points run configurations at the selected toolchains: Python configs use the
 /// project interpreter, npm scripts the chosen package manager and Node.js,
-/// cargo / go configs the selected toolchain, Maven / Gradle the project JDK
+/// cargo / go configs the selected toolchain, Maven / Gradle their runner JDK
 /// (and Maven the configured home and options).
 pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings) {
     let explicit_python = setting_path(root, &s.languages.python.interpreter);
@@ -1236,28 +1322,33 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     path_dirs.push(bin);
                 }
             }
-            "maven" | "tomcat" => {
+            "tomcat" => {
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
-                if c.kind == "maven" {
-                    // A goal configuration saved from the tool window bakes in the
-                    // launcher that was current then — the literal `mvn` (#328),
-                    // the wrapper or the daemon. Those heal to the settings-
-                    // resolved launcher on every launch, so a later Maven home or
-                    // daemon change takes effect without editing each saved
-                    // config, and one saved while the daemon was on heals back
-                    // to mvn when it is turned off. A launcher the user wrote as
-                    // an absolute path is theirs and stays as configured (#1147).
-                    if let Some(mvn) = &mvn
-                        && (c.detected
-                            || generated_maven_goal(c)
-                            || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat" | "mvnd" | "mvnd.cmd"))
-                    {
-                        c.command = mvn.to_string_lossy().into_owned();
-                    }
-                    add_maven_options(&mut c.args, &mvn_options);
+            }
+            "maven" => {
+                for (key, value) in maven_build_env(root, s, None) {
+                    c.env.entry(key).or_insert(value);
                 }
+                // A goal configuration saved from the tool window bakes in the launcher that
+                // was current then — the literal `mvn` (#328), the wrapper or the daemon.
+                // Those heal to the settings-resolved launcher on every launch, so a later
+                // Maven home or daemon change takes effect without editing each saved config;
+                // `mvnd` stays in the set so a config saved while the daemon was on heals too.
+                // A launcher the user wrote as an absolute path is theirs and stays (#1147).
+                if let Some(mvn) = &mvn
+                    && (c.detected
+                        || generated_maven_goal(c)
+                        || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat" | "mvnd" | "mvnd.cmd"))
+                {
+                    c.command = mvn.to_string_lossy().into_owned();
+                }
+                let additive_profiles = generated_maven_goal(c)
+                    && c.id.split_once(".xml:").is_some_and(|(_, goals)| {
+                        !goals.split_whitespace().any(|a| maven_option_flag(a) == Some("-P"))
+                    });
+                add_maven_options(&mut c.args, &mvn_options, additive_profiles);
             }
             _ => {}
         }

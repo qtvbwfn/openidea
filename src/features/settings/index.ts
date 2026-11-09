@@ -20,9 +20,15 @@ import { logError } from "@/platform/errorLog";
 import { restoreRemote } from "@/platform/remote";
 import { provideSettingsSearchIndex, registerOverlay } from "@/workbench/contributions";
 import { windowBackgroundHex } from "@/workbench/theme";
-import { LazySettingsDialog, loadBuiltinPages, unloadBuiltinPages } from "./dialog/LazySettingsDialog";
+import {
+  LazyProjectStructureDialog,
+  LazySettingsDialog,
+  loadBuiltinPages,
+  unloadBuiltinPages,
+} from "./dialog/LazySettingsDialog";
 import {
   closeSettings,
+  openProjectStructure,
   openSettings,
   rebaseSettings,
   selectPage,
@@ -31,7 +37,7 @@ import {
   settingsTitle,
   useSettingsDialog,
 } from "./model/staging";
-import { zoomActions } from "./appearanceRuntime";
+import { appearanceToggleActions, zoomActions } from "./appearanceRuntime";
 import { activateFileTypes } from "./fileTypesRuntime";
 import { trackRuntimeSettings } from "./runtime";
 import { installActionProxies, installSettingsHost } from "./window/bridge";
@@ -115,8 +121,20 @@ export function activate(): () => void {
     activatePhpStatus(),
     unloadBuiltinPages,
     registerOverlay({ id: "settings.dialog", component: LazySettingsDialog }),
+    registerOverlay({ id: "settings.projectStructure", component: LazyProjectStructureDialog }),
     registerActions(zoomActions()),
+    registerActions(appearanceToggleActions()),
     registerActions(settingsActions((page, newProjects) => void showSettings(page, newProjects))),
+    registerActions([
+      {
+        id: "file.projectStructure",
+        title: "Project Structure…",
+        category: "File",
+        icon: "folder",
+        keywords: ["project structure", "sdk", "jdk", "modules", "libraries", "facets", "artifacts", "sources"],
+        run: ({ arg }) => openProjectStructure(typeof arg === "string" ? arg : undefined),
+      },
+    ]),
     activateFileTypes(),
     registerOverlay({
       id: "settings.assignShortcut",

@@ -120,8 +120,8 @@ function reportMissing(p: Produced) {
 }
 
 /** Builds with `build` in the Run window; resolves whether it succeeded. */
-async function buildFirst(build: RunConfig): Promise<boolean> {
-  const session = await startRun(build);
+async function buildFirst(build: RunConfig, show?: boolean): Promise<boolean> {
+  const session = await startRun(build, undefined, undefined, { show });
   if (!session) return false;
   return new Promise((resolve) => {
     const check = () => {
@@ -139,7 +139,11 @@ async function buildFirst(build: RunConfig): Promise<boolean> {
 }
 
 /** Runs or debugs a production (adopting it as the selected temporary configuration). */
-export async function launchProduced(p: Produced, debug: boolean, services?: boolean): Promise<void> {
+export async function launchProduced(
+  p: Produced,
+  debug: boolean,
+  options?: { services?: boolean; show?: boolean },
+): Promise<void> {
   if (p.missing || !p.config) {
     reportMissing(p);
     return;
@@ -160,11 +164,18 @@ export async function launchProduced(p: Produced, debug: boolean, services?: boo
       });
       return;
     }
-    if (!(await buildFirst(p.debug.build))) return;
-    await executeAction("debug.startConfig", { config: p.debug.config, origin: config, services });
+    if (!(await buildFirst(p.debug.build, options?.show))) return;
+    // `services` marks the session as launched from the Services window (origin propagation);
+    // `show: false` keeps a batch launch from stealing the console.
+    await executeAction("debug.startConfig", {
+      config: p.debug.config,
+      origin: config,
+      services: options?.services,
+      show: options?.show,
+    });
     return;
   }
-  await executeAction("run.debugConfig", config);
+  await executeAction("run.debugConfig", options?.show === false ? { config, show: false } : config);
 }
 
 /**

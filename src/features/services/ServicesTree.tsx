@@ -5,7 +5,6 @@
  */
 import { useEffect, useMemo, useRef } from "react";
 import clsx from "clsx";
-import { setContext } from "@/platform/context";
 import { useTxTemplate, tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
@@ -181,8 +180,8 @@ export function ServicesTreeView() {
           </div>
         </>
       ) : (
-        <SplitGroup orientation="horizontal" className={styles.split}>
-          <SplitPanel defaultSize="30%" minSize="160px">
+        <SplitGroup orientation="horizontal" className={styles.split} storageKey="openidea.services.detailSplit">
+          <SplitPanel id="services-items" defaultSize="30%" minSize="160px">
             {/* The toolbar lives in the tree pane, so the detail pane starts at the very top. */}
             <div className={styles.treePane}>
               <div className={styles.toolbar} role="toolbar" aria-label={tx("Services actions")}>
@@ -225,15 +224,10 @@ export function ServicesTreeView() {
                   />
                 ))}
               </div>
-              <div
-                className={styles.tree}
-                onFocus={(e) =>
-                  setContext(SERVICES_VIEW_FOCUS, (e.target as HTMLElement).getAttribute("role") === "tree")
-                }
-                onBlur={() => setContext(SERVICES_VIEW_FOCUS, false)}
-              >
+              <div className={styles.tree}>
                 <Tree<ServiceTreeItem>
                   key={location}
+                  focusContext={SERVICES_VIEW_FOCUS}
                   reorder={reorder}
                   roots={roots}
                   getKey={(n) => n.key}
@@ -282,7 +276,7 @@ export function ServicesTreeView() {
             </div>
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel minSize="200px">
+          <SplitPanel id="services-detail" minSize="200px">
             {selected && Detail && shown ? (
               <Detail key={selected.item.key} item={selected.item} />
             ) : (

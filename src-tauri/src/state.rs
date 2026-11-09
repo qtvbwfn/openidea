@@ -23,6 +23,8 @@ pub struct AppState {
     pub plugins: Arc<ide_host::plugins::PluginHost>,
     /// The built-in web server (Open In › Browser, the editor's browser bar).
     pub web: ide_web::WebServer,
+    /// Tools › MCP Server: built-in IDE tools for agents.
+    pub mcp: crate::commands::mcp::McpService,
     /// Credential prompts of `ssh` / `git` child processes (`None` if it failed to start).
     pub askpass: Option<ide_ssh::askpass::AskpassServer>,
     /// Remote development connections, by window label.
@@ -120,6 +122,7 @@ impl AppState {
                 &host,
             )?,
             web: ide_web::WebServer::new(),
+            mcp: Default::default(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,
             startup: Startup {

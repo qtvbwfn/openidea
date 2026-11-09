@@ -33,6 +33,7 @@ import {
 } from "@/ui";
 import { RISK_LABEL, sortByRisk } from "./consent";
 import { pluginIconName } from "./pluginIcon";
+import { localizeContributions, usePluginCatalogs, usePluginT } from "./pluginText";
 import { itemsOf, uiPoint } from "./projection";
 import {
   compareVersions,
@@ -54,6 +55,7 @@ import {
   usePlugins,
 } from "./store";
 import { useProject } from "@/platform/project";
+import { openExternalUrl } from "@/platform/openUrl";
 import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
 import { promptInput } from "@/workbench/inputDialogs";
 import styles from "./PluginsPage.module.css";
@@ -75,6 +77,7 @@ const POINT_TITLES: Record<string, string> = {
   iconThemes: "File Icon Themes",
   languages: "Languages",
   providers: "Editor Providers",
+  locales: "Translations",
 };
 
 const pointTitle = (point: string) => uiPoint(point)?.title ?? POINT_TITLES[point] ?? point;
@@ -268,7 +271,9 @@ function pointsOf(plugin: PluginInfo): string[] {
 function PointSection({ plugin, point }: { plugin: PluginInfo; point: string }) {
   const ui = usePlugins((s) => s.ui);
   const Details = uiPoint(point)?.Details;
-  const items = itemsOf(ui, point, plugin.id);
+  const catalogs = usePluginCatalogs((s) => s.catalogs);
+  const t = usePluginT(plugin.id);
+  const items = itemsOf(localizeContributions(ui, catalogs), point, plugin.id);
   return (
     <Section title={pointTitle(point)}>
       {Details && items.length > 0 ? (
@@ -279,7 +284,7 @@ function PointSection({ plugin, point }: { plugin: PluginInfo; point: string }) 
             .filter((c) => c.point === point)
             .map((c, i) => (
               <li key={`${c.label}-${i}`} className={styles.item}>
-                <span className={styles.itemMain}>{c.label}</span>
+                <span className={styles.itemMain}>{t(c.label)}</span>
               </li>
             ))}
         </ul>
@@ -292,7 +297,7 @@ function CapabilityRow({ cap, children }: { cap: CapabilityInfo; children?: Reac
   return (
     <li className={styles.item}>
       {children}
-      <span className={styles.itemMain}>{cap.description}</span>
+      <span className={styles.itemMain}>{tx(cap.description)}</span>
       <span className={styles.mono}>{cap.id}</span>
       <Badge tone={RISK_LABEL[cap.risk].tone}>{RISK_LABEL[cap.risk].label}</Badge>
     </li>
@@ -321,6 +326,34 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
         </CapabilityRow>
       ))}
     </ul>
+  );
+}
+
+function Homepage({ value }: { value: string }) {
+  let isWebUrl = false;
+  try {
+    const { protocol } = new URL(value);
+    isWebUrl = protocol === "http:" || protocol === "https:";
+  } catch {
+    // Malformed manifest values remain readable as plain text.
+  }
+  return (
+    <dd className={clsx(styles.mono, styles.homepage)}>
+      {isWebUrl ? (
+        <a
+          href={value}
+          className={styles.homepageLink}
+          onClick={(event) => {
+            event.preventDefault();
+            void openExternalUrl(value);
+          }}
+        >
+          {value}
+        </a>
+      ) : (
+        value
+      )}
+    </dd>
   );
 }
 
@@ -358,7 +391,7 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
             <dt>
               <T>Homepage</T>
             </dt>
-            <dd className={styles.mono}>{plugin.homepage}</dd>
+            <Homepage value={plugin.homepage} />
           </>
         )}
       </dl>
@@ -499,6 +532,14 @@ function CatalogDetails({ entry }: { entry: CatalogPlugin }) {
           <T>Code</T>
         </dt>
         <dd>{entry.hasCode ? tx("WebAssembly component (sandboxed)") : tx("None — contributions only")}</dd>
+        {entry.homepage && (
+          <>
+            <dt>
+              <T>Homepage</T>
+            </dt>
+            <Homepage value={entry.homepage} />
+          </>
+        )}
         {contributes.length > 0 && (
           <>
             <dt>

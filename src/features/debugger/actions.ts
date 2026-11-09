@@ -29,9 +29,16 @@ import { removeAllSpecial, specialAt, toggleFieldAt, toggleMethodAt } from "./br
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
-import { reloadChangedClasses } from "./hotswap";
+import { cancelHotSwapBuild, reloadChangedClasses } from "./hotswap";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
-import { isRemoteConfig, REMOTE_JVM, remoteAttachConfig, remoteJvmTarget } from "./remote";
+import {
+  isPythonAttachTarget,
+  isRemoteConfig,
+  pythonAttachConfig,
+  REMOTE_JVM,
+  remoteAttachConfig,
+  remoteJvmTarget,
+} from "./remote";
 import {
   activeSession,
   resumeExecution,
@@ -45,6 +52,7 @@ import {
   startSession,
   startPreparedSession,
   stopSession,
+  stopAssociatedProcess,
   useDebug,
   type DebugSession,
 } from "./state";
@@ -228,7 +236,10 @@ async function listenForJvm(name: string, host: string, port: number): Promise<n
 }
 
 /** Remote JVM Debug, Go Remote, Python / Node.js remote: attach over host:port. */
-async function startRemote(config: RunConfig, root: string, origin?: "services") {
+async function startRemote(config: RunConfig, root: string, options?: { services?: boolean; show?: boolean }) {
+  // `services` marks the session as launched from the Services window (its UI owns it);
+  // `show: false` keeps a batch launch from stealing the console.
+  const origin = options?.services ? ("services" as const) : undefined;
   if (config.kind === REMOTE_JVM) {
     const t = remoteJvmTarget(config);
     let hostName = t.host;
@@ -240,15 +251,20 @@ async function startRemote(config: RunConfig, root: string, origin?: "services")
     }
     const launch = await javaAttachConfig({ name: config.name, module: t.module, hostName, port }, root);
     // A listen relay accepts one debugger: rerunning listens again through the configuration.
-    await startSession(launch, { runConfig: config, rerunnable: t.mode === "attach", origin });
+    await startSession(launch, { runConfig: config, rerunnable: t.mode === "attach", origin, show: options?.show });
     return;
   }
   const launch = remoteAttachConfig(config, root);
-  if (launch) await startSession(launch, { runConfig: config, origin });
+  if (launch) await startSession(launch, { runConfig: config, origin, show: options?.show });
 }
 
 /** Preparation belongs to a session from the moment the action begins. */
-async function startJavaConfig(config: RunConfig, root: string, origin: RunConfig, services: boolean) {
+async function startJavaConfig(
+  config: RunConfig,
+  root: string,
+  origin: RunConfig,
+  options?: { services?: boolean; show?: boolean },
+) {
   await startPreparedSession(
     origin,
     async (signal, report) => {
@@ -258,16 +274,22 @@ async function startJavaConfig(config: RunConfig, root: string, origin: RunConfi
       };
       signal.addEventListener("abort", cancel, { once: true });
       try {
-        await maybeEditorService()
-          ?.saveAll()
-          .catch(() => undefined);
-        signal.throwIfAborted();
-        return await javaLaunchConfig(config, root, { request, signal, report });
+        return await javaLaunchConfig(config, root, {
+          request,
+          signal,
+          report,
+          saveAll: async () => {
+            await maybeEditorService()?.saveAll();
+          },
+        });
       } finally {
         signal.removeEventListener("abort", cancel);
       }
     },
-    { origin: services ? "services" : undefined },
+    {
+      origin: options?.services ? ("services" as const) : undefined,
+      show: options?.show,
+    },
   );
 }
 
@@ -275,9 +297,12 @@ async function startConfig(arg: unknown) {
   const root = useProject.getState().project?.root;
   if (!root) return;
   const origin = arg && typeof arg === "object" && "origin" in arg && isRunConfig(arg.origin) ? arg.origin : null;
+  // `services` marks the session as launched from the Services window; `show: false` keeps
+  // a batch launch from stealing the console.
   const services =
     !!arg && typeof arg === "object" && "services" in arg && (arg as { services?: boolean }).services === true;
   const servicesOrigin = services ? ("services" as const) : undefined;
+  const show = arg && typeof arg === "object" && "show" in arg ? (arg as { show?: boolean }).show : undefined;
   const input = arg && typeof arg === "object" && "config" in arg ? arg.config : arg;
   let config: RunConfig | null = isRunConfig(input) ? input : null;
   if (!config) {
@@ -302,16 +327,16 @@ async function startConfig(arg: unknown) {
     config = configs[0]!;
     // Through Run's debug flow: Maven / Gradle / scripts start the JVM with a JDWP agent there.
     if (getAction("run.debugConfig")) {
-      await executeAction("run.debugConfig", config);
+      await executeAction("run.debugConfig", show === false ? { config, show: false } : config);
       return;
     }
   }
   if (isRemoteConfig(config)) {
-    await startRemote(config, root, servicesOrigin);
+    await startRemote(config, root, { services, show });
     return;
   }
   if (isJavaDebuggable(config)) {
-    await startJavaConfig(config, root, origin ?? config, services);
+    await startJavaConfig(config, root, origin ?? config, { services, show });
     return;
   }
   const dotnet = config.kind === "dotnet" && config.debugAdapter === "netcoredbg";
@@ -334,7 +359,7 @@ async function startConfig(arg: unknown) {
     ?.saveAll()
     .catch(() => undefined);
   // The Services origin marker stays (its UI belongs there); the Xdebug probe runs alongside.
-  await startSession(launch, { runConfig: origin ?? config, origin: servicesOrigin });
+  await startSession(launch, { runConfig: origin ?? config, origin: servicesOrigin, show });
   await xdebugCheck;
 }
 
@@ -392,6 +417,8 @@ export function registerDebugActions(): () => void {
       title: "Attach Debugger",
       category: "Debug",
       hidden: true,
+      // Also debugpy to a Python program in a run target's container
+      // (arg: { name, adapter: "debugpy", hostName, port, remoteRoot, process }).
       description:
         "Attach the Java debugger to a JVM listening for JDWP (arg: { name, module, hostName, port, process })",
       run: ({ arg }) =>
@@ -399,16 +426,22 @@ export function registerDebugActions(): () => void {
           tx("Cannot attach the debugger"),
           (async () => {
             const root = useProject.getState().project?.root;
-            if (!root || !isJavaAttachTarget(arg)) return;
-            const launch = await javaAttachConfig(arg, root);
+            if (!root) return;
+            let launch: LaunchConfig;
+            if (isPythonAttachTarget(arg)) launch = pythonAttachConfig(arg, root);
+            else if (isJavaAttachTarget(arg)) launch = await javaAttachConfig(arg, root);
+            else return;
             const services =
               typeof arg === "object" && "services" in arg && (arg as { services?: boolean }).services === true;
-            await startSession(launch, {
+            const session = await startSession(launch, {
               process: (arg.process ?? null) as RunId | null,
               runConfig: arg.runConfig,
               rerunnable: false,
               origin: services ? "services" : undefined,
+              show: (arg as { show?: boolean }).show,
             });
+            if (session == null && isPythonAttachTarget(arg) && arg.process != null)
+              await stopAssociatedProcess(arg.process);
           })(),
         ),
     },
@@ -438,6 +471,15 @@ export function registerDebugActions(): () => void {
             ? arg.configId
             : undefined,
         ),
+    },
+    {
+      id: "debug.cancelHotSwap",
+      title: "Cancel Hot Swap Build",
+      description: "Stop the compile a Reload Changed Classes action is waiting on",
+      category: "Debug",
+      icon: "stop",
+      when: "debugHotSwapBuilding",
+      run: () => cancelHotSwapBuild(),
     },
     {
       id: "debug.rerun",

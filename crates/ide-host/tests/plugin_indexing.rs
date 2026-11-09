@@ -16,15 +16,22 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_manifest(|_| {})
+    }
+    fn with_manifest(edit: impl FnOnce(&Path)) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         let host = PluginHost::new(root.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap();
         host.set_project_policy(Arc::new(|_| true));
-        host.install_from_dir(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/indexer"),
-            &Consent::all(),
-        )
-        .unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/indexer");
+        let package = tempfile::tempdir().unwrap();
+        let pkg = package.path();
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        for file in ["plugin.toml", "dist/plugin.wasm"] {
+            std::fs::copy(fixture.join(file), pkg.join(file)).unwrap();
+        }
+        edit(pkg);
+        host.install_from_dir(pkg, &Consent::all()).unwrap();
         Self { _tmp: tmp, root, host }
     }
     fn index(&self, path: &str, text: &str, symbols: &[SymbolTag], version: Option<u32>, scope: &str) -> PathBuf {
@@ -141,6 +148,21 @@ fn permissions_and_paths_are_checked_before_indexing() {
 }
 
 #[test]
+fn indexed_refactorings_drop_graphs_after_permission_revocation_or_lost_trust() {
+    let f = Fixture::new();
+    let path = f.index("source.idx", "def item\nref item\n", &[], Some(1), "app");
+    let pos = Pos::new(0, 4);
+    assert!(f.host.indexed_symbol_at(&f.root, &path, pos, None).is_some());
+    f.host.set_project_policy(Arc::new(|_| false));
+    assert!(f.host.indexed_symbol_at(&f.root, &path, pos, None).is_none());
+    f.host.set_project_policy(Arc::new(|_| true));
+    f.host.set_capability("test.indexer", "project.read", false).unwrap();
+    assert!(f.host.indexed_symbol_at(&f.root, &path, pos, None).is_none());
+    f.host.set_capability("test.indexer", "project.read", true).unwrap();
+    assert!(f.host.indexed_symbol_at(&f.root, &path, pos, None).is_none(), "regrant requires fresh snapshots");
+}
+
+#[test]
 fn syntax_symbols_aliases_and_utf16_ranges_cross_the_wasm_boundary() {
     let f = Fixture::new();
     let symbol = method();
@@ -176,6 +198,7 @@ fn two_windows_of_same_root_keep_unsaved_snapshots_isolated() {
                         workspace_root: Some(f.root.clone()),
                         editor: None,
                         selected_paths: Vec::new(),
+                        global_settings: false,
                     },
                 )
                 .unwrap();
@@ -222,6 +245,47 @@ fn markers_and_disable_follow_graph_state() {
 }
 
 #[test]
+fn marker_icons_map_indexed_markers_by_longest_key_prefix() {
+    let f = Fixture::with_manifest(|pkg| {
+        let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap().replace("^1.2", "^1.3");
+        std::fs::create_dir_all(pkg.join("icons")).unwrap();
+        std::fs::write(
+            pkg.join("icons/marker.svg"),
+            r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                r#"{manifest}
+[[contributes.markerIcons]]
+id = "mapping"
+icon = "icons/marker.svg"
+markers = ["mapping:"]
+
+[[contributes.markerIcons]]
+id = "mapping-item"
+icon = "icons/marker.svg"
+markers = ["other:", "mapping:item"]
+tooltip = "Mapped item"
+"#
+            ),
+        )
+        .unwrap();
+    });
+    let source = f.index("source.idx", "def source:item\nref mapping:item\nref mapping:other\n", &[], Some(1), "app");
+    let mapping = f.index("mapping.idx", "def mapping:item\ndef mapping:other\nref source:item\n", &[], Some(1), "app");
+    let entries = f.host.navigation_markers(&f.root, &[source.clone(), mapping.clone()], None, |_| None);
+    let icons = |path: &PathBuf| {
+        let entry = entries.iter().find(|e| &e.path == path).unwrap();
+        assert!(entry.markers.iter().all(|m| m.plugin_id == "test.indexer"));
+        entry.markers.iter().map(|m| m.icon.as_deref()).collect::<Vec<_>>()
+    };
+    assert_eq!(icons(&source), [Some("mapping-item"), Some("mapping")]);
+    assert_eq!(icons(&mapping), [None]);
+}
+
+#[test]
 fn invalid_ranges_and_oversized_documents_never_publish() {
     let f = Fixture::new();
     let path = f.root.join("invalid.idx");
@@ -238,4 +302,43 @@ fn invalid_ranges_and_oversized_documents_never_publish() {
         );
     }
     assert!(f.host.navigation_markers(&f.root, &[path], None, |_| None).is_empty());
+}
+
+#[test]
+fn usages_from_definitions_and_references_follow_aliases_module_scope_and_client() {
+    let f = Fixture::new();
+    let definition = f.index("a/source.idx", "def item\nsymbols parent#\n", &[method()], Some(1), "a");
+    f.index("a/child.idx", "alias child# parent#\n", &[], None, "a");
+    let reference = f.index("a/use.idx", "ref child#item\n", &[], Some(1), "a");
+    let other = f.index("b/source.idx", "def item\nsymbols parent#\n", &[method()], Some(1), "b");
+    let external = f.index("c/use.idx", "ref child#item\n", &[], Some(1), "c");
+    let unrelated = f.index("b/use.idx", "ref child#item\n", &[], Some(1), "b");
+    for (path, pos) in [(&definition, Pos::new(0, 4)), (&reference, Pos::new(0, 6))] {
+        let symbol = f.host.indexed_symbol_at(&f.root, path, pos, None).unwrap();
+        assert!(symbol.files.iter().any(|f| f.path == definition));
+        assert!(symbol.files.iter().any(|f| f.path == reference));
+        assert!(!symbol.files.iter().any(|f| f.path == other), "prefer same-module definitions and their uses");
+        assert!(symbol.files.iter().any(|f| f.path == external), "external reference resolves to this definition");
+        assert!(!symbol.files.iter().any(|f| f.path == unrelated), "reference resolves to its own module");
+        assert_eq!(symbol.files.iter().map(|f| f.ranges.len()).sum::<usize>(), 3);
+    }
+    assert!(f.host.indexed_symbol_at(&f.root, &definition, Pos::new(0, 0), None).is_none());
+    assert!(f.host.indexed_symbol_at(&f.root, &definition, Pos::new(0, 4), Some("other-window")).is_none());
+    f.host.set_project_policy(Arc::new(|_| false));
+    assert!(f.host.indexed_symbol_at(&f.root, &definition, Pos::new(0, 4), None).is_none());
+}
+
+#[test]
+fn cross_module_reference_and_definition_have_the_same_rename_anchors() {
+    let f = Fixture::new();
+    let definition = f.index("a/source.idx", "def item\nsymbols parent#\n", &[method()], Some(1), "a");
+    f.index("a/alias.idx", "alias child# parent#\n", &[], None, "a");
+    let external = f.index("b/use.idx", "ref item\n", &[], Some(1), "b");
+    let alias = f.index("c/use.idx", "ref child#item\n", &[], Some(1), "c");
+    for path in [&definition, &external, &alias] {
+        let symbol = f.host.indexed_symbol_at(&f.root, path, Pos::new(0, 4), None).unwrap();
+        let paths: Vec<_> = symbol.files.iter().map(|f| f.path.clone()).collect();
+        assert_eq!(paths, vec![definition.clone(), external.clone(), alias.clone()]);
+        assert_eq!(symbol.files.iter().map(|f| f.ranges.len()).sum::<usize>(), 3);
+    }
 }
