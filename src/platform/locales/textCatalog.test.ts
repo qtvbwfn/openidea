@@ -70,6 +70,8 @@ const NOTIFY = new Set(["notify"]);
 
 /** Code templates shown as written, and the in-memory backends of plain-browser development. */
 const UNCHECKED_FILES = new Set([
+  // Pre-module failure UI carries its own English/Chinese text when catalogs cannot load.
+  "public/boot.js",
   "src/editor/core/backend.ts",
   "src/features/plugins/backend.ts",
   "src/features/tools/backend.ts",
@@ -87,6 +89,7 @@ const UNTRANSLATED = new Set<string>([
   "dotnet test",
   "netcoredbg (.NET)",
   "php-debug (PHP)",
+  "rdbg (Ruby)",
   // Product names
   "Cargo",
   "CMake",
@@ -97,6 +100,10 @@ const UNTRANSLATED = new Set<string>([
   "GitHub",
   "PHPStan",
   "Xdebug",
+  "Chrome",
+  "Safari",
+  "Firefox",
+  "JaCoCo",
   // Docker run target placeholder values
   "compose.yaml",
   "python:3.12",
@@ -167,6 +174,7 @@ const UNTRANSLATED = new Set<string>([
   "npm",
   "OpenIDEA",
   "Oracle",
+  "Spring",
   "Spring Boot",
   "PostgreSQL",
   "Pyrefly",
@@ -192,6 +200,7 @@ const UNTRANSLATED = new Set<string>([
   "Fixup",
   "Fixup…",
   "IDE",
+  "localhost",
   "mod tests",
   "Windows (\\r\\n)",
   // Terms, keywords and acronyms kept in English
@@ -200,9 +209,12 @@ const UNTRANSLATED = new Set<string>([
   "GOROOT",
   "HEAD",
   "HTTP",
+  "JAR",
   "JDK",
   "JDK 1.4.x",
   "JDK 5 - 8",
+  "JPA",
+  "JRE",
   "LTS",
   "NULL",
   "ORDER BY",
@@ -213,6 +225,8 @@ const UNTRANSLATED = new Set<string>([
   "TODO",
   "URL",
   "VCS",
+  "WAR",
+  "Web",
   "WHERE",
   "WIP",
   // Code, commands and example values
@@ -222,6 +236,7 @@ const UNTRANSLATED = new Set<string>([
   "build --info",
   "className()",
   "clean install -DskipTests",
+  "com.example.Main",
   "com.example.Service#process, main.run, parse",
   "docker-compose.yml; docker-compose.override.yml",
   "file:src//*&&!file:*test*",
@@ -234,11 +249,15 @@ const UNTRANSLATED = new Set<string>([
   "NAME",
   "NAME=value; OTHER=value",
   "node_modules/typescript",
+  "out",
   "PascalCase",
   "polls.tests",
   "CalculatorTest::testAdd",
   "phpunit.xml",
   "PHPUnit",
+  "src/main/webapp",
+  "target/classes",
+  "target/test-classes",
   "tests/Unit",
   "vendor/bin/phpunit",
   "pylyzer --server",
@@ -474,7 +493,10 @@ function scanTypeScript(): Scan {
   const spliced: Use[] = [];
   const keys: Use[] = [];
   const literals = new Set<string>();
-  const files = walk(`${ROOT}src`, (p) => /\.tsx?$/.test(p) && !isTest(p) && !p.endsWith("/bindings.ts"));
+  const files = [
+    ...walk(`${ROOT}src`, (p) => /\.tsx?$/.test(p) && !isTest(p) && !p.endsWith("/bindings.ts")),
+    `${ROOT}public/boot.js`,
+  ];
   for (const file of files) {
     const path = file.slice(ROOT.length);
     const source = readFileSync(file, "utf8");
@@ -518,6 +540,8 @@ function scanTypeScript(): Scan {
         for (const text of texts) {
           literals.add(shape(text));
           literals.add(shape(text.trim()));
+          // Color scheme trees display the individual segments of grouped attribute names.
+          for (const part of text.split(" › ")) literals.add(shape(part));
         }
         const sink = checked ? sinkOf(node, exact, template) : undefined;
         if (sink) {

@@ -7,8 +7,10 @@
 pub mod editor_settings;
 pub mod error;
 pub mod event;
+pub mod go;
 pub mod ids;
 pub mod ignored;
+pub mod input;
 pub mod inspection_settings;
 pub mod ipc_path;
 pub mod java_runtime;

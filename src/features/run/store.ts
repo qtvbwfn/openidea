@@ -19,9 +19,9 @@ import {
   type TestCaseReport,
 } from "@/platform/ipc";
 import {
-  consoleVmArgs,
   findJavaModule,
   isJvmApplication,
+  JavaBuildFailedError,
   parseJavaArgs,
   prepareJavaLaunch,
 } from "@/platform/javaLaunch";
@@ -30,6 +30,7 @@ import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
+import { applyBuildPolicyToCommand } from "./buildCommand";
 import { ConsoleModel } from "./console";
 import { jvmFrameTarget } from "./links";
 import { confirmRerun, confirmTerminate } from "./dialogs";
@@ -47,16 +48,17 @@ import { RubyTestOutput } from "./testing/ruby";
 import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
-import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./testing/rerun";
+import { failedTestPaths, leafTestPaths, rerunFailedConfigs, testsConfigs } from "./testing/rerun";
+import { buildCMake, isCMakeBuild } from "./cmake";
 import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
 import { loadRunTemplates } from "./runTemplates";
 import { recordRun } from "./services";
-import { startedPort } from "./serverPort";
+import { startedPort } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
-import { gradleDelegation, gradleTestLaunch } from "./gradleRun";
+import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
 
@@ -411,6 +413,32 @@ export function adoptTemporary(config: RunConfig): RunConfig {
   return config;
 }
 
+/**
+ * A file removed (or moved away) takes the temporary context configurations its
+ * path produced (`context:file:` and the compiled `context:build:` partner), like
+ * IDEA deleting the context configuration with the file. Saved and detected
+ * configurations the user made stay.
+ */
+export function dropStaleContextConfigs(removed: readonly string[]) {
+  const { configs, temporary, selectedId } = useRun.getState();
+  const root = useProject.getState().project?.root;
+  if (!root || !removed.length || !temporary.length) return;
+  // Temporary ids carry the project-relative path (the full path outside the root).
+  const gone = new Set(removed.map((p) => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p)));
+  const stale = (id: string) => {
+    const m = /^context:(?:file|build):(.+?)(?:#.+)?$/.exec(id);
+    return !!m && gone.has(m[1]!);
+  };
+  const dropped = temporary.filter(stale);
+  if (!dropped.length) return;
+  useRun.setState({
+    configs: configs.filter((c) => !dropped.includes(c.id)),
+    temporary: temporary.filter((id) => !stale(id)),
+  });
+  persistTemporary();
+  if (selectedId && dropped.includes(selectedId)) selectConfig(null);
+}
+
 /** "Save Configuration": a temporary configuration becomes a user configuration. */
 export async function saveTemporary(id: string): Promise<void> {
   const { configs, temporary } = useRun.getState();
@@ -530,10 +558,10 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
       ? { timeout: window.setTimeout(() => flush(sessionId), 100) }
       : wait > 0
         ? {
-            timeout: window.setTimeout(
-              () => (rt.flushHandle = { raf: requestAnimationFrame(() => flush(sessionId)) }),
-              wait,
-            ),
+            timeout: window.setTimeout(() => {
+              if (document.hidden) flush(sessionId);
+              else rt.flushHandle = { raf: requestAnimationFrame(() => flush(sessionId)) };
+            }, wait),
           }
         : { raf: requestAnimationFrame(() => flush(sessionId)) };
   }
@@ -627,7 +655,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
 }
 
 /** Runs a configuration's before launch tasks; false aborts the launch. Installed by the feature. */
-export type BeforeLaunchRunner = (config: RunConfig, chain: readonly string[]) => Promise<boolean>;
+export type BeforeLaunchRunner = (config: RunConfig, chain: readonly string[], show?: boolean) => Promise<boolean>;
 let beforeLaunch: BeforeLaunchRunner | null = null;
 
 export function setBeforeLaunchRunner(runner: BeforeLaunchRunner | null) {
@@ -635,17 +663,25 @@ export function setBeforeLaunchRunner(runner: BeforeLaunchRunner | null) {
 }
 
 /** Runs `config`'s before launch tasks (none: true). `chain` holds the configurations already launching. */
-export async function prepareLaunch(config: RunConfig, chain: readonly string[] = []): Promise<boolean> {
+export async function prepareLaunch(
+  config: RunConfig,
+  chain: readonly string[] = [],
+  show?: boolean,
+): Promise<boolean> {
   if (!config.beforeLaunch?.length || !beforeLaunch) return true;
-  return beforeLaunch(config, [...chain, config.id]);
+  return beforeLaunch(config, [...chain, config.id], show);
 }
 
 /** Starts every configuration of a compound (after the compound's own before launch tasks). */
-export async function startCompound(config: RunConfig, chain: readonly string[] = []): Promise<RunSession[]> {
-  if (!(await prepareLaunch(config, chain))) return [];
+export async function startCompound(
+  config: RunConfig,
+  chain: readonly string[] = [],
+  show?: boolean,
+): Promise<RunSession[]> {
+  if (!(await prepareLaunch(config, chain, show))) return [];
   const children = compoundChildren(config, useRun.getState().configs);
   const sessions = await Promise.all(
-    children.map((c) => startRun(c, undefined, undefined, { chain: [...chain, config.id] })),
+    children.map((c) => startRun(c, undefined, undefined, { chain: [...chain, config.id], show })),
   );
   return sessions.filter((s): s is RunSession => !!s);
 }
@@ -676,8 +712,12 @@ export async function startRun(
     chain?: readonly string[];
   } = {},
 ): Promise<RunSession | null> {
+  if (!options.launch && isCMakeBuild(config)) {
+    await buildCMake(config.id, options.show !== false);
+    return null;
+  }
   if (config.kind === "compound") {
-    await startCompound(config, options.chain);
+    await startCompound(config, options.chain, options.show);
     return null;
   }
   // IDEA offers only Debug for Remote JVM Debug and the like: there is nothing to run.
@@ -692,7 +732,7 @@ export async function startRun(
     });
     return null;
   }
-  if (!options.launch && !options.prepared && !(await prepareLaunch(config, options.chain))) return null;
+  if (!options.launch && !options.prepared && !(await prepareLaunch(config, options.chain, options.show))) return null;
   const state = useRun.getState();
   const busy = (s: RunSession) => isLive(s);
   let session = reuse ? state.sessions.find((s) => s.id === reuse) : undefined;
@@ -789,7 +829,7 @@ export async function startRun(
   });
   rt.onExit = options.onExit;
   try {
-    if (config.focusToolWindow) toolWindowService().show("run", true);
+    if (options.show !== false && config.focusToolWindow) toolWindowService().show("run", true);
     else if (options.show ?? config.openToolWindow ?? workflowSettings().run.showOnStart)
       toolWindowService().show("run");
   } catch {
@@ -812,6 +852,8 @@ export async function startRun(
   };
   try {
     let launch = options.launch ?? config;
+    // A Maven/Gradle configuration's own command is its build; Rebuild adds clean.
+    if (!options.launch) launch = applyBuildPolicyToCommand(launch);
     // "Build and run using: Gradle": the module's Gradle build compiles and launches it.
     const delegated = isJvmApplication(launch) ? await gradleDelegation(launch) : null;
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
@@ -838,7 +880,7 @@ export async function startRun(
     if ((options.launch || launch.isTest) && launch.emulateTerminal) launch = { ...launch, emulateTerminal: false };
     if (launch.emulateTerminal) rt.terminal = new TerminalOutput();
     patchSession(sessionId, { terminal: !!launch.emulateTerminal });
-    const started = launch.isTest ? await gradleTestLaunch(withTestReporting(launch)) : launch;
+    const started = launch.isTest ? await gradleTestLaunch(withTestReporting(launch)) : await gradleBootLaunch(launch);
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     const processStarted = performance.now();
     const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
@@ -892,7 +934,8 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
     say(`No main class in '${config.name}': expected java [options] -cp \${classpath} <main class> [args]\n`, "stderr");
     return null;
   }
-  if (!parsed.classpath) return { ...config, args: [...consoleVmArgs(config), ...config.args] };
+  // Always prepare, exactly like Debug: even an explicit classpath needs the module, the
+  // project JDK and the selected build, and both modes must share the same result.
   const rt = runtime(sessionId)!;
   const request = { id: nextRequestId(), controller: new AbortController() };
   rt.resolveRequest = request;
@@ -901,6 +944,9 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       request: request.id,
       signal: request.controller.signal,
       report: say,
+      saveAll: async () => {
+        await maybeEditorService()?.saveAll();
+      },
     });
     // No installed JDK is new enough for the module: offer to download one.
     const jdkHint = info.hints.find((h) => downloadJdkActions(h).length);
@@ -920,7 +966,7 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       if (runtimes.get(sessionId) === rt && rt.resolveRequest === request) patchSession(sessionId, { stopped: true });
       return null;
     }
-    say(`Cannot resolve the classpath: ${message}\n`, "stderr");
+    say(e instanceof JavaBuildFailedError ? `${message}\n` : `Cannot resolve the classpath: ${message}\n`, "stderr");
     // jdtls can't start without a newer JDK: "Download JDK 25".
     const actions = downloadJdkActions(message);
     notifications().notify({
@@ -1142,9 +1188,11 @@ export function rerunSession(sessionId: string) {
  * `run.debugConfig` entry the Services view and the editor context menu use
  * (`baseConfig` keeps the original configuration for derived launches).
  */
-export function debugSession(sessionId: string) {
+export function debugSession(sessionId: string, options: { show?: boolean } = {}) {
   const session = getSession(sessionId);
-  if (session) void executeAction("run.debugConfig", baseConfigOf(session));
+  if (!session) return;
+  const config = baseConfigOf(session);
+  void executeAction("run.debugConfig", options.show === false ? { config, show: false } : config);
 }
 
 /** Paths of the failed tests of a session's last run. */
@@ -1158,9 +1206,9 @@ export function rerunFailed(sessionId: string): boolean {
   const session = getSession(sessionId);
   if (!session || isLive(session)) return false;
   const base = baseConfigOf(session);
-  const derived = rerunFailedConfig(base, failedTests(sessionId));
-  if (!derived) return false;
-  void startRun(derived, sessionId, base);
+  const derived = rerunFailedConfigs(base, failedTests(sessionId));
+  if (!derived.length) return false;
+  derived.forEach((config, index) => void startRun(config, index === 0 ? sessionId : undefined, base));
   return true;
 }
 
@@ -1180,14 +1228,16 @@ export async function runSelectedTests(
   const paths = leafTestPaths(nodes);
   const base = baseConfigOf(session);
   const name = nodes.length === 1 ? nodes[0]!.name : `${paths.length} tests`;
-  const derived = testsConfig(base, paths, name);
-  if (!derived) return false;
-  const config = adoptTemporary({
-    ...derived,
-    id: `context:tests:${base.id}:${paths.map((p) => p.join("/")).join("|")}`,
-  });
-  if (debug) await executeAction("run.debugConfig", config);
-  else await startRun(config);
+  const derived = testsConfigs(base, paths, name);
+  if (!derived.length) return false;
+  for (const [index, next] of derived.entries()) {
+    const config = adoptTemporary({
+      ...next,
+      id: `context:tests:${base.id}:${index}:${paths.map((p) => p.join("/")).join("|")}`,
+    });
+    if (debug) await executeAction("run.debugConfig", config);
+    else await startRun(config, undefined, base);
+  }
   return true;
 }
 
@@ -1214,7 +1264,7 @@ export async function sendStdin(sessionId: string, text: string): Promise<void> 
   } catch (e) {
     enqueue(sessionId, {
       kind: "system",
-      text: tx`Cannot write to stdin: ${e instanceof Error ? e.message : String(e)}\n`,
+      text: tx`Cannot write to stdin: ${e instanceof Error ? tx(e.message) : String(e)}\n`,
     });
   }
 }
@@ -1223,7 +1273,12 @@ export async function sendStdin(sessionId: string, text: string): Promise<void> 
 export function writeTerminal(sessionId: string, data: string) {
   const session = getSession(sessionId);
   if (!session || session.runId === null || session.status !== "running") return;
-  void call(commands.runStdin(session.runId, data)).catch(() => undefined);
+  void call(commands.runStdin(session.runId, data)).catch((e) => {
+    enqueue(sessionId, {
+      kind: "system",
+      text: tx`Cannot write to stdin: ${e instanceof Error ? tx(e.message) : String(e)}\n`,
+    });
+  });
 }
 
 /** The terminal console's size in cells; the process's terminal follows it. */
