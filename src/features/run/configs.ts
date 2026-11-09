@@ -83,6 +83,7 @@ export const KIND_CATEGORIES: Record<string, string> = {
   "go-test": "Go",
   "go-remote": "Go",
   cc: "C/C++",
+  "cmake-application": "C/C++",
   shell: "Shell",
   program: "Shell",
 };
@@ -103,14 +104,6 @@ export const CATEGORY_ORDER: readonly string[] = [
 
 export function categoryOf(kind: string): string {
   return useRunConfigTypes.getState().types.get(kind)?.group ?? KIND_CATEGORIES[kind] ?? "Others";
-}
-
-/**
- * Whether the run kind executes on a JVM (its console can carry MyBatis logs).
- * `shortcut: tomcat is hardcoded — registered types don't declare a language.`
- */
-export function isJvmKind(kind: string): boolean {
-  return categoryOf(kind) === "Java" || kind === "maven" || kind === "gradle" || kind === "tomcat";
 }
 
 export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {

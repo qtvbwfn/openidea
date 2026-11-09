@@ -255,6 +255,8 @@ describe("catalogs", () => {
   const OWN_SCRIPT = new Set(["zh", "ko"]);
   /** Product names intentionally kept as written in every locale. */
   const SAME_AS_ENGLISH = new Set([
+    "if",
+    "log",
     "Docker",
     "Shell",
     "Java",

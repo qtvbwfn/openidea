@@ -61,7 +61,7 @@ beforeEach(() => {
   });
   useRun.setState({ configs: [config], sessions: [], loaded: true });
   useDebug.setState({ sessions: {}, console: {}, active: null });
-  useDebugRunSessions.setState({ sessions: [], serviceSessions: [] });
+  useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: DebugServiceConsole });
   useServicesTree.setState({
     roots: {},
     selectedKey: null,
@@ -75,7 +75,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   dispose();
   disposeActions();
-  useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: DebugServiceConsole });
+  useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null });
 });
 const select = () =>
   fireEvent.mouseDown(
@@ -84,8 +84,6 @@ const select = () =>
       .closest('[role="treeitem"]')!,
   );
 const toolbar = () => within(screen.getByRole("toolbar", { name: "Services actions" }));
-/** The detail pane's toolbar: lifecycle actions (Run / Rerun / Stop) live there, not in the tree toolbar. */
-const panel = () => within(screen.getByRole("toolbar", { name: "Run actions" }));
 
 it("shows debug output/state, pins actions, and does not rebuild the tree for stdout", async () => {
   adoptSession(1, { runConfig: config });
@@ -99,10 +97,8 @@ it("shows debug output/state, pins actions, and does not rebuild the tree for st
   select();
   expect(screen.getByRole("log")).toHaveTextContent("gateway log");
   expect(screen.getByRole("log")).not.toHaveTextContent("other log");
-  // Lifecycle actions belong to the detail pane's toolbar; the tree toolbar keeps batch/reorder only.
-  expect(toolbar().queryByRole("button", { name: "Stop" })).toBeNull();
-  expect(panel().getByRole("button", { name: "Stop" })).toBeEnabled();
-  fireEvent.click(panel().getByRole("button", { name: /Rerun/ }));
+  expect(toolbar().getByRole("button", { name: "Stop" })).toBeEnabled();
+  fireEvent.click(toolbar().getByRole("button", { name: "Rerun" }));
   expect(d.rerun).toHaveBeenCalledOnce();
   expect(useDebug.getState().active).toBe(2);
   const roots = useServicesTree.getState().roots;
@@ -111,7 +107,7 @@ it("shows debug output/state, pins actions, and does not rebuild the tree for st
   expect(useServicesTree.getState().roots).toBe(roots);
   act(() => useDebugRunSessions.setState({ serviceSessions: [{ ...d, status: "paused" }] }));
   expect(within(screen.getByRole("tree")).getByText("Suspended")).toBeTruthy();
-  fireEvent.click(panel().getByRole("button", { name: "Stop" }));
+  fireEvent.click(toolbar().getByRole("button", { name: "Stop" }));
   expect(d.stop).toHaveBeenCalledOnce();
 });
 
@@ -212,7 +208,7 @@ it("keeps the other parallel instance alive and then displays it", async () => {
   render(<ServicesTreeView />);
   select();
   expect(screen.getByRole("log")).toHaveTextContent("second instance");
-  fireEvent.click(panel().getByRole("button", { name: "Stop" }));
+  fireEvent.click(toolbar().getByRole("button", { name: "Stop" }));
   expect(second.stop).toHaveBeenCalledOnce();
   expect(first.stop).not.toHaveBeenCalled();
   act(() => useDebugRunSessions.setState({ serviceSessions: [first, { ...second, status: "terminated" }] }));

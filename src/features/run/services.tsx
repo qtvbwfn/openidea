@@ -69,7 +69,7 @@ const TYPE_PREFIX = "run:type:";
 const CONFIG_PREFIX = "run:config:";
 const STORAGE_KEY = "openidea.services.runTypes:";
 const RAN_KEY = "openidea.services.ran:";
-/** Types shown in Services until the user changes the list. npm covers the JS dev servers (vite and friends). */
+/** Types shown in Services until the user changes the list. */
 export const DEFAULT_TYPES: readonly string[] = ["spring-boot"];
 
 // ---------------------------------------------------------------------------
@@ -308,22 +308,6 @@ function executionDetail(s: ServiceSession | undefined): string | undefined {
   return s.run ? sessionDetail(s.run) : "Finished";
 }
 
-/** The configurations of `kind` the tree shows: all, for added types; the ran ones, otherwise. */
-function kindConfigs(
-  kind: string,
-  configs: readonly RunConfig[],
-  added: readonly string[],
-  ran: readonly string[],
-  latest: ReadonlyMap<string, ServiceSession>,
-): RunConfig[] {
-  const entries: RunConfig[] = added.includes(kind)
-    ? configs.filter((c) => c.kind === kind)
-    : ran.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c && c.kind === kind);
-  for (const s of latest.values())
-    if (s.config.kind === kind && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
-  return entries;
-}
-
 /**
  * Groups by configuration type: added types list all their configurations, other
  * types only those that ran. A default type (Spring Boot) without configurations is hidden.
@@ -560,37 +544,6 @@ function browserActions(sessions: readonly ServiceSession[]): ServiceItemAction[
 
 function itemActions(item: ServiceTreeItem): ServiceItemAction[] {
   const r = resolve(item);
-  // A type group: batch actions over its configurations.
-  if (!r.config && r.kind) {
-    const kind = r.kind;
-    const root = useProject.getState().project?.root ?? null;
-    const { configs, sessions } = useRun.getState();
-    const executions = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions);
-    const latest = currentServiceSessions(executions);
-    const entries = kindConfigs(kind, configs, currentTypes(), ranIds(root), latest);
-    const running = executions.filter((s) => s.config.kind === kind && liveServiceSession(s));
-    const runnable = entries.some((c) => {
-      const s = latest.get(c.id);
-      return !(s && liveServiceSession(s)) && !isDebugOnly(c);
-    });
-    return [
-      { id: "run-all", title: "Run All", icon: "run", disabled: !runnable, run: () => startAll(kind, false) },
-      {
-        id: "restart-all",
-        title: "Restart All",
-        icon: "rerun",
-        disabled: !entries.length,
-        run: () => startAll(kind, true),
-      },
-      {
-        id: "stop-all",
-        title: "Stop All",
-        icon: "stop",
-        disabled: !running.length,
-        run: () => void stopServiceSessions(running),
-      },
-    ];
-  }
   const running = r.sessions.filter(liveServiceSession);
   if (!r.config && r.kind) {
     const kind = r.kind;
