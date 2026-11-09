@@ -5,7 +5,6 @@ import { useRunConfigTypes } from "@/workbench/contributions";
 
 const KIND_LABELS: Record<string, string> = {
   npm: "npm",
-  vue: "Vue",
   deno: "Deno",
   bun: "Bun",
   cargo: "Cargo",
@@ -69,7 +68,6 @@ export const KIND_CATEGORIES: Record<string, string> = {
   make: "Build Tools",
   just: "Build Tools",
   npm: "JavaScript",
-  vue: "JavaScript",
   node: "JavaScript",
   bun: "JavaScript",
   deno: "JavaScript",
@@ -120,8 +118,6 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "npm":
     case "bun":
       return "file-npm";
-    case "vue":
-      return "file-vue";
     case "deno":
       return "file-ts";
     case "cargo":
