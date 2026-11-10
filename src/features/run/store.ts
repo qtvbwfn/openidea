@@ -85,6 +85,8 @@ export interface RunSession {
   stopped?: boolean;
   /** The unfiltered configuration when this run was started by "Rerun Failed Tests". */
   baseConfig?: RunConfig;
+  /** Started from the Services tool window: its UI belongs there, not in the Run window. */
+  origin?: "services";
   /** "Emulate terminal in output console": the output is a terminal. */
   terminal?: boolean;
   /** The HTTP port the application's embedded web server reported it started on. */
@@ -700,6 +702,8 @@ export async function startRun(
   baseConfig?: RunConfig,
   options: {
     show?: boolean;
+    /** Started from the Services tool window: its session stays out of the Run window. */
+    services?: boolean;
     /** Launch this instead of `config` (e.g. with a debug agent); the tab still shows `config`. Skips before launch tasks. */
     launch?: RunConfig;
     /** Every output line of this run. */
@@ -802,6 +806,7 @@ export async function startRun(
       endedAt: null,
       stdinClosed: false,
       baseConfig,
+      origin: options.services ? "services" : undefined,
     };
     runtimes.set(session.id, newRuntime(config));
     const created = session;

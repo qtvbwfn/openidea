@@ -453,14 +453,14 @@ function run(r: Resolved) {
   if (debug) (debug.rerunInPlace ?? debug.rerun)?.();
   else if (r.session?.run) {
     const s = r.session.run;
-    void startRun(rerunConfig(s), s.id, s.baseConfig, { show: false });
-  } else if (r.config) void startRun(r.config, undefined, undefined, { show: false });
+    void startRun(rerunConfig(s), s.id, s.baseConfig, { show: false, services: true });
+  } else if (r.config) void startRun(r.config, undefined, undefined, { show: false, services: true });
 }
 
 function debug(r: Resolved) {
   const session = serviceDebugger(r.session);
   if (session) (session.rerunInPlace ?? session.rerun)?.();
-  else if (r.config) void executeAction("run.debugConfig", { config: r.config, show: false });
+  else if (r.config) void executeAction("run.debugConfig", { config: r.config, show: false, services: true });
 }
 
 function groupConfigs(kind: string): RunConfig[] {
@@ -505,7 +505,7 @@ async function startAll(kind: string, restart: boolean): Promise<void> {
     const running = serviceSessions(useRun.getState().sessions, useDebugRunSessions.getState().serviceSessions);
     if (running.some((s) => s.config.id === config.id && liveServiceSession(s))) continue;
     try {
-      await startRun(config, undefined, undefined, { show: false });
+      await startRun(config, undefined, undefined, { show: false, services: true });
     } catch (e) {
       notifications().notify({ group: "run", level: "error", title: tx`Cannot run '${config.name}'`, body: String(e) });
     }

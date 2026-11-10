@@ -115,7 +115,8 @@ function statusText(s: DebugSession): string {
 export function DebugTabs() {
   const sessions = useDebug((s) => s.sessions);
   const active = useDebug((s) => s.active);
-  const list = Object.values(sessions);
+  // Debug sessions started from the Services tool window live there (IDEA keeps them out of Debug).
+  const list = Object.values(sessions).filter((s) => s.origin !== "services");
   if (!list.length) return null;
   const items: TabItem[] = list.map((s) => ({
     id: String(s.id),
@@ -141,7 +142,11 @@ export function DebugTabs() {
 }
 
 export function DebugToolWindow() {
-  const active = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
+  // A session started from the Services tool window keeps its UI there.
+  const active = useDebug((s) => {
+    const session = s.active != null ? s.sessions[s.active] : undefined;
+    return session?.origin === "services" ? undefined : session;
+  });
   const muted = useBreakpoints((s) => s.muted);
   const [view, setView] = useState<{
     session: number | undefined;
