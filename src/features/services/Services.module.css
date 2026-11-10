@@ -105,6 +105,9 @@
   height: 100%;
   display: flex;
   flex-direction: column;
+  /* The detail content manages its own scrolling (a console): the panel must
+     not add a second scrollbar for its subpixel overflow. */
+  overflow: hidden;
 }
 .detailBody {
   flex: 1;

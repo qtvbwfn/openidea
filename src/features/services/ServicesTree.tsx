@@ -276,7 +276,7 @@ export function ServicesTreeView() {
             </div>
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel id="services-detail" minSize="200px">
+          <SplitPanel id="services-detail" minSize="200px" className={styles.detailPane}>
             {selected && Detail && shown ? (
               <Detail key={selected.item.key} item={selected.item} />
             ) : (
