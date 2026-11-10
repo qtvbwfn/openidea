@@ -21,13 +21,19 @@ pub(super) fn project_configs(
     let root_suppressed = ide_run::load_suppressed_config_ids(root)?;
     let mut all = detected_and_saved(root, settings, &user, &root_suppressed);
     if let Some(workspace) = ide_workspace::workspace::Workspace::load(root)? {
+        // Members keep their configurations' bare names; only a name that also
+        // appears in another member (or the root) gets the member's directory
+        // name as a prefix, so the tree shows "JmtDwApp", not
+        // "jmt-service / JmtDwApp", unless disambiguation is really needed.
+        let mut members: Vec<(String, Vec<RunConfig>)> = Vec::new();
         for member in workspace.projects.into_iter().filter(|p| p.is_dir()) {
             let settings = ide_workspace::SettingsStore::load(config_dir, Some(&member)).effective();
             let saved = ide_run::load_user_configs(&member)?;
             let suppressed = ide_run::load_suppressed_config_ids(&member)?;
             let configs = detected_and_saved(&member, &settings, &saved, &suppressed);
             let key = crate::project::project_key(&member);
-            let name = member.file_name().unwrap_or_default().to_string_lossy();
+            let name = member.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let mut kept = Vec::new();
             for mut config in configs {
                 for task in &mut config.extras.before_launch {
                     if matches!(task.kind.as_str(), "run" | "build") && !task.target.is_empty() {
@@ -38,9 +44,26 @@ pub(super) fn project_configs(
                     *id = format!("workspace:{key}:{id}");
                 }
                 config.id = format!("workspace:{}:{}", key, config.id);
-                config.name = format!("{name} / {}", config.name);
                 ide_run::scope::rebase(&mut config, &member, None);
                 config.detected = true;
+                kept.push(config);
+            }
+            members.push((name, kept));
+        }
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for config in &all {
+            *counts.entry(config.name.clone()).or_default() += 1;
+        }
+        for (_, configs) in &members {
+            for config in configs {
+                *counts.entry(config.name.clone()).or_default() += 1;
+            }
+        }
+        for (name, configs) in members {
+            for mut config in configs {
+                if counts.get(&config.name).is_some_and(|n| *n > 1) {
+                    config.name = format!("{name} / {}", config.name);
+                }
                 if !user.iter().any(|u| u.id == config.id) && !root_suppressed.contains(&config.id) {
                     all.push(config);
                 }

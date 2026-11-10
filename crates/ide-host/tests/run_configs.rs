@@ -157,3 +157,56 @@ async fn gradle_init_scripts_are_written_by_the_host_that_runs_the_build() {
     let escaped = ops::run::run_gradle_init_script(&host, "main", "../escape".into(), String::new()).await;
     assert!(escaped.is_err(), "{escaped:?}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_single_members_configurations_keep_their_bare_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    let member = root.join("native");
+    std::fs::create_dir(&member).unwrap();
+    std::fs::write(member.join("CMakeLists.txt"), "project(demo)").unwrap();
+    let workspace = root.join("workspace");
+    ide_workspace::workspace::Workspace::save(&workspace, "Native", vec![member.clone()], true).unwrap();
+    let host = host(&root.join("app"));
+    host.trust.decide(&workspace, true, false).unwrap();
+    host.trust.decide(&member, true, false).unwrap();
+    host.open_project("main", &workspace).unwrap();
+    let configs = ops::run::configs(&host, "main").unwrap();
+    let from_member: Vec<_> = configs.iter().filter(|c| c.id.starts_with("workspace:")).collect();
+    assert!(!from_member.is_empty(), "{configs:?}");
+    // Unique names are shown as they are: no "member / name" noise.
+    for config in from_member {
+        assert!(!config.name.contains(" / "), "prefixed without a collision: {}", config.name);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn colliding_configuration_names_are_prefixed_with_the_member() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    let first = root.join("first-app");
+    let second = root.join("second-app");
+    for dir in [&first, &second] {
+        std::fs::create_dir(dir).unwrap();
+        std::fs::write(dir.join("CMakeLists.txt"), "project(demo)").unwrap();
+    }
+    let workspace = root.join("workspace");
+    ide_workspace::workspace::Workspace::save(&workspace, "Apps", vec![first.clone(), second.clone()], true).unwrap();
+    let host = host(&root.join("app"));
+    host.trust.decide(&workspace, true, false).unwrap();
+    host.trust.decide(&first, true, false).unwrap();
+    host.trust.decide(&second, true, false).unwrap();
+    host.open_project("main", &workspace).unwrap();
+    let configs = ops::run::configs(&host, "main").unwrap();
+    let from_members: Vec<_> = configs.iter().filter(|c| c.id.starts_with("workspace:")).collect();
+    assert!(from_members.len() >= 2, "{configs:?}");
+    // Both members detect the same CMake configuration names: the member's
+    // directory name disambiguates them.
+    for config in from_members {
+        assert!(
+            config.name.starts_with("first-app / ") || config.name.starts_with("second-app / "),
+            "colliding name not prefixed: {}",
+            config.name
+        );
+    }
+}
