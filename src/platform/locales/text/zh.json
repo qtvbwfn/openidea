@@ -6938,5 +6938,8 @@
   "if": "if",
   "log": "log",
   "{adapter} exception filters": "{adapter} 异常过滤器",
-  "{entries} entries": "{entries} 项"
+  "{entries} entries": "{entries} 项",
+  "Copy MyBatis SQL": "复制 MyBatis SQL",
+  "The selection has no MyBatis SQL log to convert": "所选内容中没有可转换的 MyBatis SQL 日志",
+  "Could not copy to the clipboard": "无法写入剪贴板"
 }

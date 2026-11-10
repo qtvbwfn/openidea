@@ -104,6 +104,11 @@ export function categoryOf(kind: string): string {
   return useRunConfigTypes.getState().types.get(kind)?.group ?? KIND_CATEGORIES[kind] ?? "Others";
 }
 
+/** Whether the run kind executes on a JVM (its console can carry MyBatis logs). */
+export function isJvmKind(kind: string): boolean {
+  return categoryOf(kind) === "Java" || kind === "maven" || kind === "gradle" || kind === "tomcat";
+}
+
 export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
   if (config.isTest) return "check";
   switch (config.kind) {
