@@ -47,6 +47,15 @@ Visual style: dark, low-contrast greys, one cool accent
 - For GUI verification, prefer Tauri MCP; use Computer Use only when Tauri MCP is
   unavailable or cannot cover the required checks.
 
+## Fork-only features
+
+- **Configuration directory**: everything the app writes lives under one base
+  (`~/.openidea`; `OPENIDEA_HOME` or a recorded pointer overrides it). Never read
+  Tauri's app directories or `dirs::config/data/cache` directly in `src-tauri` —
+  use the `paths` accessors. `src-tauri/tests/paths_guard.rs` enforces this after
+  an upstream sync; the design and the sync checklist are in
+  `docs/fork/configuration-directory.md`.
+
 ## Issues & PRs
 
 Follow `CONTRIBUTING.md` and `.github/pull_request_template.md`: one problem per PR
