@@ -21,5 +21,5 @@ fn base_takes_the_environment_variable() {
     assert_eq!(openidea_lib::paths::plugins_dir(&layout, &locations), custom.join("config"));
     assert_eq!(openidea_lib::paths::log_dir(&layout, "ai.l0ng.openidea"), Some(custom.join("log")));
     assert_eq!(openidea_lib::paths::login_cache_root(&layout, &locations, "ai.l0ng.openidea"), custom.join("system"));
-    assert_eq!(openidea_lib::paths::tools_home(&layout, "ai.l0ng.openidea"), Some(custom.clone()));
+    assert_eq!(openidea_lib::paths::tools_home(&layout, &resolved.defaults), Some(custom.clone()));
 }

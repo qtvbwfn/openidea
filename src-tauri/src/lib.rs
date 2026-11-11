@@ -111,7 +111,7 @@ pub fn run() {
         paths::Layout::Custom(_) => {
             // Everything hangs off the chosen base; tools stay at its top
             // level, so pointing a build at another's base shares its tools.
-            let base = paths::tools_home(&resolved.layout, identifier).expect("a custom base has a tools home");
+            let base = paths::tools_home(&resolved.layout, &resolved.defaults).expect("a custom base has a tools home");
             ide_tools::set_tools_home(base.clone());
             ide_tools::extend_process_path(&base);
             ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&base));
@@ -119,7 +119,7 @@ pub fn run() {
         }
         paths::Layout::Default => {
             // As before: managed tools under the app data dir.
-            if let Some(root) = paths::tools_home(&resolved.layout, identifier) {
+            if let Some(root) = paths::tools_home(&resolved.layout, &resolved.defaults) {
                 ide_tools::extend_process_path(&root);
                 ide_dap::adapter::set_tools_root(ide_tools::tools_dir(&root));
                 ide_sdk::java::add_jdk_root(&ide_tools::jdk::jdks_dir(&root));
@@ -206,6 +206,10 @@ pub fn run() {
         invoke(request)
     })
     .setup(move |app| {
+        // One-time move of a legacy platform install into the default base,
+        // before anything reads settings. Plugins (single-instance first) have
+        // already run, so a second launch never migrates.
+        paths::bootstrap_legacy_migrate();
         builder.mount_events(app);
         let state = AppState::new(app.handle().clone())?;
         let windows = WindowsState::default();

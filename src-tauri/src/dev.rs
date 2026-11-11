@@ -9,7 +9,7 @@ fn identifier(root: &str) -> String {
     // FNV-1a, shared with scripts/dev-session.ts.
     let hash =
         root.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3));
-    format!("ai.l0ng.openidea.dev.w{hash:016x}")
+    format!("{}w{hash:016x}", crate::paths::DEV_PREFIX)
 }
 
 #[cfg(test)]

@@ -39,24 +39,63 @@ pub struct Locations {
     pub data: PathBuf,
 }
 
-/// What [`init`] resolved: the layout, the two directories, the platform
-/// defaults (the pointer's anchor) and the home dir (tilde expansion).
+/// The platform layout's three roots: Tauri's `app_config_dir`,
+/// `app_data_dir` and `app_local_data_dir` per identifier. Windows keeps
+/// rebuildable data in the local root; macOS and Linux usually collapse the
+/// roots to one or two directories.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlatformDirs {
+    pub config: PathBuf,
+    pub data: PathBuf,
+    pub local: PathBuf,
+}
+
+/// What [`init`] resolved: the base in use, its two directories, the built-in
+/// default base (`None` when the home directory is unknown), the platform
+/// layout (the pointer's anchor and the legacy migration source) and the home
+/// dir (tilde expansion).
 pub struct Resolved {
     pub layout: Layout,
     pub locations: Locations,
-    pub defaults: (PathBuf, PathBuf),
+    pub default_base: Option<PathBuf>,
+    pub defaults: PlatformDirs,
     pub home: PathBuf,
+}
+
+impl Resolved {
+    /// Whether this process runs from the built-in base: `~/.openidea`, or the
+    /// development worktree's own base under `~/.openidea/dev`.
+    pub fn is_default(&self) -> bool {
+        matches!(&self.layout, Layout::Custom(base) if Some(base) == self.default_base.as_ref())
+    }
+
+    /// The base for display: the chosen base, or the platform config dir when
+    /// the home directory is unknown.
+    pub fn base(&self) -> &Path {
+        match &self.layout {
+            Layout::Custom(base) => base,
+            Layout::Default => &self.defaults.config,
+        }
+    }
 }
 
 static RESOLVED: OnceLock<Resolved> = OnceLock::new();
 
 const POINTER_NAME: &str = "home.txt";
 const SKIP_NAME: &str = ".skip-migration";
+/// Written when a migration left entries behind: the next start may replace
+/// the files its own boot wrote into the target.
+const MIGRATION_MARKER: &str = ".migration-incomplete";
+
+/// The prefix [`crate::dev`] gives a worktree build; its suffix (`w<hash>`) is
+/// the worktree's own base name under `~/.openidea/dev`.
+pub const DEV_PREFIX: &str = "ai.l0ng.openidea.dev.";
 
 /// Legacy entry → its place in a custom base. The sources are the platform
-/// defaults — config-side files in `app_config_dir`, everything else in
-/// `app_data_dir` (the same directory on macOS) — and every name is looked
-/// up through [`entry_path`], which knows both layouts. Adding an entry is
+/// defaults — config-side files in `app_config_dir`, rebuildable data in
+/// `app_local_data_dir` on Windows (with `app_data_dir` as the fallback for
+/// installs from before the split), everything else in `app_data_dir` — and
+/// every name is looked up through [`entry_path`]/[`source_candidates`]. Adding an entry is
 /// safe on an already-migrated machine: the source is only read where the
 /// previous layout actually wrote. Pinned by
 /// `migration_moves_the_full_mapping`.
@@ -64,9 +103,11 @@ const MOVES: &[(&str, &str)] = &[
     ("settings.toml", "config/settings.toml"),
     ("languages", "config/languages"),
     ("recent.json", "config/recent.json"),
+    ("recent-groups.json", "config/recent-groups.json"),
     ("window-groups.json", "config/window-groups.json"),
     ("plugins", "config/plugins"),
     ("git-credentials.json", "system/git-credentials.json"),
+    ("project-trust.json", "system/project-trust.json"),
     ("ssh-passwords.json", "system/ssh-passwords.json"),
     ("proxy-password.json", "system/proxy-password.json"),
     ("db-passwords.json", "system/db-passwords.json"),
@@ -90,18 +131,34 @@ const MOVES: &[(&str, &str)] = &[
 /// Entries that live on the config side in the *default* layout; every other
 /// entry lives on the data side there (in a custom base the MOVES target
 /// decides, which puts `plugins` on the config side on purpose).
-const DEFAULT_CONFIG_SIDE: &[&str] = &["settings.toml", "languages", "recent.json", "window-groups.json"];
+const DEFAULT_CONFIG_SIDE: &[&str] =
+    &["settings.toml", "languages", "recent.json", "recent-groups.json", "window-groups.json"];
 
 /// Rebuildable caches: dropped, not moved (`index` and `cache` regenerate).
 const DROPS: &[&str] = &["index", "cache"];
 
-/// The platform defaults for an identifier — Tauri's `app_config_dir` /
-/// `app_data_dir` (which are `dirs::config_dir()` / `dirs::data_dir()` joined
-/// with the identifier on every platform).
-pub fn default_dirs(identifier: &str) -> (PathBuf, PathBuf) {
+/// The directories a custom base owns. Everything else in it — the agent
+/// worktrees, a remote server's `data/` — must survive a base switch.
+const CUSTOM_TRASH: &[&str] = &["config", "system", "log", "tools", "language-server-runtimes"];
+
+/// The platform defaults for an identifier — Tauri's `app_config_dir`,
+/// `app_data_dir` and `app_local_data_dir` (which are `dirs::config_dir()`,
+/// `dirs::data_dir()` and `dirs::data_local_dir()` joined with the identifier).
+pub fn default_dirs(identifier: &str) -> PlatformDirs {
     let config = dirs::config_dir().unwrap_or_else(|| dirs::data_dir().unwrap_or_default());
     let data = dirs::data_dir().unwrap_or_else(|| dirs::data_local_dir().unwrap_or_default());
-    (config.join(identifier), data.join(identifier))
+    let local = dirs::data_local_dir().unwrap_or_else(|| data.clone());
+    PlatformDirs { config: config.join(identifier), data: data.join(identifier), local: local.join(identifier) }
+}
+
+/// The built-in base: `~/.openidea`, with each development worktree isolated
+/// under `~/.openidea/dev/<hash>` (its identifier carries the hash).
+pub fn default_base(identifier: &str, home: &Path) -> PathBuf {
+    let root = home.join(".openidea");
+    match identifier.strip_prefix(DEV_PREFIX) {
+        Some(suffix) => root.join("dev").join(suffix),
+        None => root,
+    }
 }
 
 /// The pointer file inside the default config dir: its fixed location is what
@@ -120,11 +177,18 @@ pub fn skip_marker(default_config: &Path) -> PathBuf {
 /// are its own, and the identifier-keyed OS cache stays per worktree too.
 pub fn init(identifier: &str) {
     let defaults = default_dirs(identifier);
-    let home = dirs::home_dir().unwrap_or_else(|| defaults.1.clone());
-    let pointer = std::fs::read_to_string(pointer_file(&defaults.0)).ok();
-    let (layout, locations) =
-        resolve(std::env::var("OPENIDEA_HOME").ok().as_deref(), pointer.as_deref(), &defaults, &home);
-    let _ = RESOLVED.set(Resolved { layout, locations, defaults, home });
+    let home_dir = dirs::home_dir();
+    let home = home_dir.clone().unwrap_or_else(|| defaults.data.clone());
+    let default_base = home_dir.map(|h| default_base(identifier, &h));
+    let pointer = std::fs::read_to_string(pointer_file(&defaults.config)).ok();
+    let (layout, locations) = resolve(
+        std::env::var("OPENIDEA_HOME").ok().as_deref(),
+        pointer.as_deref(),
+        &defaults,
+        default_base.as_deref(),
+        &home,
+    );
+    let _ = RESOLVED.set(Resolved { layout, locations, default_base, defaults, home });
 }
 
 /// The resolution made by [`init`] at startup; fixed for the process.
@@ -140,7 +204,8 @@ pub fn current() -> &'static Resolved {
 fn resolve(
     env: Option<&str>,
     pointer: Option<&str>,
-    defaults: &(PathBuf, PathBuf),
+    defaults: &PlatformDirs,
+    default_base: Option<&Path>,
     home: &Path,
 ) -> (Layout, Locations) {
     if let Some(chosen) = env.map(|e| expand_tilde(e, home)).filter(|p| p.is_absolute()) {
@@ -150,19 +215,30 @@ fn resolve(
         let (target, _) = parse_pointer(text);
         if let Some(t) = target {
             if t == "default" {
-                // The sentinel "Reset to default" writes: the platform dirs,
-                // explicitly.
+                // The sentinel "Reset to default" writes: the built-in base.
+                // A process without a known home keeps the platform dirs.
+                return match default_base {
+                    Some(base) => custom_layout(base.to_path_buf()),
+                    None => default_layout(defaults),
+                };
+            }
+            if t == "platform" {
+                // Read-only alias for the legacy layout: this version never
+                // writes it, but an older pointer may still name it.
                 return default_layout(defaults);
             }
             let path = expand_tilde(t, home);
             // A dangling pointer (the target was removed by hand) is not a
-            // choice: fall through to the defaults.
+            // choice: fall through to the default base.
             if path.is_absolute() && path.is_dir() {
                 return custom_layout(path);
             }
         }
     }
-    default_layout(defaults)
+    match default_base {
+        Some(base) => custom_layout(base.to_path_buf()),
+        None => default_layout(defaults),
+    }
 }
 
 /// The resolved pair for a chosen base: config/ and system/ under it.
@@ -171,8 +247,8 @@ fn custom_layout(base: PathBuf) -> (Layout, Locations) {
 }
 
 /// The resolved pair for the platform defaults: the two dirs as they are.
-fn default_layout(defaults: &(PathBuf, PathBuf)) -> (Layout, Locations) {
-    (Layout::Default, Locations { config: defaults.0.clone(), data: defaults.1.clone() })
+fn default_layout(defaults: &PlatformDirs) -> (Layout, Locations) {
+    (Layout::Default, Locations { config: defaults.config.clone(), data: defaults.data.clone() })
 }
 
 // The four per-consumer roots below are the only way the shell turns a
@@ -213,24 +289,21 @@ pub fn login_cache_root(layout: &Layout, locations: &Locations, identifier: &str
 }
 
 /// The managed-tools home (`tools/` and `language-server-runtimes/` hang off
-/// it): the platform data dir per identifier in the default layout, a custom
-/// base itself otherwise.
-pub fn tools_home(layout: &Layout, identifier: &str) -> Option<PathBuf> {
+/// it): the platform data dir in the legacy layout, a custom base itself
+/// otherwise.
+pub fn tools_home(layout: &Layout, defaults: &PlatformDirs) -> Option<PathBuf> {
     match layout {
-        Layout::Default => dirs::data_dir().map(|d| d.join(identifier)),
+        Layout::Default => Some(defaults.data.clone()),
         Layout::Custom(base) => Some(base.clone()),
     }
 }
 
 /// Machine-local data (caches that must not roam — upstream's
-/// `app_local_data_dir`): the OS local data dir per identifier in the default
-/// layout, the custom base's `system/` (its data side) otherwise.
-pub fn local_data_dir(layout: &Layout, defaults: &(PathBuf, PathBuf)) -> PathBuf {
+/// `app_local_data_dir`): the OS local data dir in the legacy layout, the
+/// custom base's `system/` (its data side) otherwise.
+pub fn local_data_dir(layout: &Layout, defaults: &PlatformDirs) -> PathBuf {
     match layout {
-        Layout::Default => {
-            let identifier = defaults.1.file_name().map(PathBuf::from).unwrap_or_default();
-            dirs::data_local_dir().map(|d| d.join(identifier)).unwrap_or_else(|| defaults.1.clone())
-        }
+        Layout::Default => defaults.local.clone(),
         Layout::Custom(base) => base.join("system"),
     }
 }
@@ -298,11 +371,13 @@ pub fn clear_skip_marker(default_config: &Path) {
 /// The location the user's data currently lives in, per the pointer's second
 /// line: what a migration would move *from*.
 pub fn previous_layout(resolved: &Resolved) -> Option<Layout> {
-    let text = std::fs::read_to_string(pointer_file(&resolved.defaults.0)).ok()?;
+    let text = std::fs::read_to_string(pointer_file(&resolved.defaults.config)).ok()?;
     let (_, previous) = parse_pointer(&text);
     match previous {
         None => None,
-        Some("default") => Some(Layout::Default),
+        // `default` is the line-2 spelling written before the built-in base
+        // existed; `platform` is the explicit name. Both mean the legacy dirs.
+        Some("default" | "platform") => Some(Layout::Default),
         Some(path) => Some(Layout::Custom(expand_tilde(path, &resolved.home))),
     }
 }
@@ -315,32 +390,75 @@ pub fn previous_layout(resolved: &Resolved) -> Option<Layout> {
 /// every entry), the current location is the data's home.
 pub fn data_home(resolved: &Resolved) -> Layout {
     previous_layout(resolved)
-        .filter(|p| migration_pending(p, &resolved.layout, &resolved.defaults).is_some())
+        // The marker silences the prompt, not the chain: a user who declined
+        // once and switches again must still have the old data found.
+        .filter(|p| pending_entries(p, &resolved.layout, &resolved.defaults) > 0)
         .unwrap_or_else(|| resolved.layout.clone())
 }
 
 /// The two roots a layout writes: the config and data sides.
-pub fn side_roots(layout: &Layout, defaults: &(PathBuf, PathBuf)) -> (PathBuf, PathBuf) {
+pub fn side_roots(layout: &Layout, defaults: &PlatformDirs) -> (PathBuf, PathBuf) {
     match layout {
-        Layout::Default => (defaults.0.clone(), defaults.1.clone()),
+        Layout::Default => (defaults.config.clone(), defaults.data.clone()),
         Layout::Custom(base) => (base.join("config"), base.join("system")),
+    }
+}
+
+/// Every root a layout writes or may hold data in, deduplicated: the platform
+/// layout's three roots, or a custom base's two sides.
+pub fn all_roots(layout: &Layout, defaults: &PlatformDirs) -> Vec<PathBuf> {
+    unique(match layout {
+        Layout::Default => vec![defaults.config.clone(), defaults.data.clone(), defaults.local.clone()],
+        Layout::Custom(base) => vec![base.join("config"), base.join("system")],
+    })
+}
+
+fn unique(dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for dir in dirs {
+        if !out.contains(&dir) {
+            out.push(dir);
+        }
+    }
+    out
+}
+
+/// Where one mapped entry may sit in a *source* layout: the base target for a
+/// custom base, the config root for config-side entries, and the preferred
+/// plus the fallback data root for the rest. Windows moved rebuildable data to
+/// the local root; installs from before that move still keep it in roaming.
+fn source_candidates(name: &str, target: &str, layout: &Layout, defaults: &PlatformDirs) -> Vec<PathBuf> {
+    match layout {
+        Layout::Custom(base) => vec![base.join(target)],
+        Layout::Default if DEFAULT_CONFIG_SIDE.contains(&name) => vec![defaults.config.join(name)],
+        Layout::Default if ide_host::data_dirs::is_local(Path::new(name)) => {
+            vec![defaults.local.join(name), defaults.data.join(name)]
+        }
+        Layout::Default => vec![defaults.data.join(name), defaults.local.join(name)],
     }
 }
 
 /// The two `agents` directories of a layout (the default layout splits the
 /// entry kinds across its two roots exactly like a custom base does).
-pub fn agents_dirs(layout: &Layout, defaults: &(PathBuf, PathBuf)) -> (PathBuf, PathBuf) {
+pub fn agents_dirs(layout: &Layout, defaults: &PlatformDirs) -> (PathBuf, PathBuf) {
     let (config, data) = side_roots(layout, defaults);
     (config.join("agents"), data.join("agents"))
 }
 
 /// Where one mapped entry lives in a layout.
-pub fn entry_path(name: &str, target: &str, layout: &Layout, defaults: &(PathBuf, PathBuf)) -> PathBuf {
+pub fn entry_path(name: &str, target: &str, layout: &Layout, defaults: &PlatformDirs) -> PathBuf {
     match layout {
         Layout::Default => {
             // The default layout has no per-entry target column: the config
-            // side is the four user-editable entries, everything else is data.
-            if DEFAULT_CONFIG_SIDE.contains(&name) { defaults.0.join(name) } else { defaults.1.join(name) }
+            // side is the user-editable entries, rebuildable data follows the
+            // platform's local root, everything else is data.
+            if DEFAULT_CONFIG_SIDE.contains(&name) {
+                defaults.config.join(name)
+            } else if ide_host::data_dirs::is_local(Path::new(name)) {
+                defaults.local.join(name)
+            } else {
+                defaults.data.join(name)
+            }
         }
         Layout::Custom(base) => base.join(target),
     }
@@ -348,28 +466,43 @@ pub fn entry_path(name: &str, target: &str, layout: &Layout, defaults: &(PathBuf
 
 /// Whether a layout already holds recognizable app data — a location the
 /// migration dialog must not treat as replaceable.
-pub fn layout_has_data(layout: &Layout, defaults: &(PathBuf, PathBuf)) -> bool {
+pub fn layout_has_data(layout: &Layout, defaults: &PlatformDirs) -> bool {
     for &(name, target) in MOVES {
-        if entry_path(name, target, layout, defaults).exists() {
+        if source_candidates(name, target, layout, defaults).into_iter().any(|p| p.exists()) {
             return true;
         }
     }
-    let (config, data) = agents_dirs(layout, defaults);
-    [config, data].iter().any(|d| std::fs::read_dir(d).is_ok_and(|mut e| e.next().is_some()))
+    all_roots(layout, defaults)
+        .iter()
+        .any(|root| std::fs::read_dir(root.join("agents")).is_ok_and(|mut e| e.next().is_some()))
 }
 
 /// Whether `base` is, contains, or nests inside a location the app already
 /// uses — a migration into such a place would move a directory into itself,
 /// and trashing it would take the defaults along.
-pub fn base_conflicts(base: &Path, defaults: &(PathBuf, PathBuf), current: Option<&Path>) -> bool {
-    let mut used = vec![defaults.0.clone(), defaults.1.clone()];
+pub fn base_conflicts(
+    base: &Path,
+    defaults: &PlatformDirs,
+    current: Option<&Path>,
+    default_base: Option<&Path>,
+) -> bool {
+    let mut used = vec![defaults.config.clone(), defaults.data.clone(), defaults.local.clone()];
     if let Some(current) = current {
         used.push(current.to_path_buf());
     }
     let base = canonical(base);
-    used.iter().any(|u| {
+    let occupied = used.iter().any(|u| {
         let u = canonical(u);
         base.starts_with(&u) || u.starts_with(&base)
+    });
+    if occupied {
+        return true;
+    }
+    // The built-in base may be chosen ("reset"), but never nested into: a path
+    // inside it would put a base next to the agent worktrees or a dev base.
+    default_base.is_some_and(|default_base| {
+        let default_base = canonical(default_base);
+        base != default_base && (base.starts_with(&default_base) || default_base.starts_with(&base))
     })
 }
 
@@ -409,19 +542,18 @@ pub struct Migration {
 /// sees the source gone and counts it moved. Logs and the login-shell cache
 /// are not migrated (both regenerate), and unknown files — the window-state
 /// plugin's included — stay behind.
-pub fn migrate(from: &Layout, to: &Layout, defaults: &(PathBuf, PathBuf), replace_existing: bool) -> Migration {
+pub fn migrate(from: &Layout, to: &Layout, defaults: &PlatformDirs, replace_existing: bool) -> Migration {
     let mut result = Migration::default();
-    let (from_config, from_data) = side_roots(from, defaults);
-    // macOS keeps the default config and data in one directory; scanning it
-    // once is only an optimization — per-entry idempotency makes a second
-    // scan of the same root harmless.
-    let sources: Vec<PathBuf> = if from_config == from_data { vec![from_config] } else { vec![from_config, from_data] };
+    // macOS keeps the default roots in one directory; `all_roots` dedups so a
+    // second scan of the same directory is not needed (per-entry idempotency
+    // would make one harmless anyway).
+    let sources = all_roots(from, defaults);
     if !sources.iter().any(|r| r.exists()) {
         return result;
     }
     for &(name, target) in MOVES {
-        let src = entry_path(name, target, from, defaults);
-        if src.exists() {
+        let src = source_candidates(name, target, from, defaults).into_iter().find(|p| p.exists());
+        if let Some(src) = src {
             move_entry(&src, &entry_path(name, target, to, defaults), &mut result, replace_existing);
         }
     }
@@ -433,9 +565,22 @@ pub fn migrate(from: &Layout, to: &Layout, defaults: &(PathBuf, PathBuf), replac
         }
     }
     for &name in DROPS {
-        // Rebuildable caches drop, not move — and only from the data side,
-        // where the default layout keeps them (a custom base's `system/`).
-        let _ = std::fs::remove_dir_all(side_roots(from, defaults).1.join(name));
+        // Rebuildable caches drop, not move.
+        for root in &sources {
+            let _ = std::fs::remove_dir_all(root.join(name));
+        }
+    }
+    // A partial move leaves entries behind; the next start may replace the
+    // files its own boot wrote into the target (a fresh settings.toml, an
+    // empty plugins dir) instead of treating them as the user's newer data.
+    let marker = side_roots(to, defaults).0.join(MIGRATION_MARKER);
+    if result.failed == 0 {
+        let _ = std::fs::remove_file(&marker);
+    } else {
+        if let Some(parent) = marker.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&marker, b"");
     }
     result
 }
@@ -525,18 +670,26 @@ fn attempt_rename(src: &Path, target: &Path) -> Attempt {
 /// How many entries a migration would still move: `None` when there is
 /// nothing to ask about — no marker to honor, and every entry either already
 /// moved or already superseded by content in the target.
-pub fn migration_pending(from: &Layout, to: &Layout, defaults: &(PathBuf, PathBuf)) -> Option<usize> {
-    if skip_marker(&defaults.0).exists() {
+pub fn migration_pending(from: &Layout, to: &Layout, defaults: &PlatformDirs) -> Option<usize> {
+    if skip_marker(&defaults.config).exists() {
         return None;
     }
-    let (from_config, from_data) = side_roots(from, defaults);
-    let sources: Vec<PathBuf> = if from_config == from_data { vec![from_config] } else { vec![from_config, from_data] };
+    let pending = pending_entries(from, to, defaults);
+    (pending > 0).then_some(pending)
+}
+
+/// How many entries a migration would still move, ignoring the prompt's
+/// "don't ask again" marker: the chaining of a later switch and the one-time
+/// platform migration need the data's location, not the dialog state.
+fn pending_entries(from: &Layout, to: &Layout, defaults: &PlatformDirs) -> usize {
+    let sources = all_roots(from, defaults);
     if !sources.iter().any(|r| r.exists()) {
-        return None;
+        return 0;
     }
     let mut pending = 0usize;
     for &(name, target) in MOVES {
-        if entry_path(name, target, from, defaults).exists() && !entry_path(name, target, to, defaults).exists() {
+        let source = source_candidates(name, target, from, defaults).into_iter().any(|p| p.exists());
+        if source && !entry_path(name, target, to, defaults).exists() {
             pending += 1;
         }
     }
@@ -546,23 +699,34 @@ pub fn migration_pending(from: &Layout, to: &Layout, defaults: &(PathBuf, PathBu
             pending += 1;
         }
     }
-    (pending > 0).then_some(pending)
+    pending
+}
+
+/// Whether a previous migration left entries behind. The next start then may
+/// replace the files its own boot created in the target.
+pub fn migration_incomplete(resolved: &Resolved) -> bool {
+    side_roots(&resolved.layout, &resolved.defaults).0.join(MIGRATION_MARKER).exists()
 }
 
 /// Moves the previous location's directories to the OS trash after a full
 /// migration — recoverable, unlike a delete, and the old state can be
 /// restored from there if the user ever needs it back. A custom base is
 /// trashed whole (its top level holds `tools/` beyond the two sides).
-pub fn trash(layout: &Layout, defaults: &(PathBuf, PathBuf)) -> std::io::Result<()> {
+pub fn trash(layout: &Layout, defaults: &PlatformDirs) -> std::io::Result<()> {
     match layout {
         Layout::Custom(base) => {
-            if base.exists() {
-                trash::delete(base).map_err(|e| std::io::Error::other(e.to_string()))?;
+            // Only the directories the app owns: the base may also hold the
+            // agent worktrees (`~/.openidea/worktrees`) or a remote server's
+            // `data/`, and those must survive a base switch.
+            for rel in CUSTOM_TRASH {
+                let path = base.join(rel);
+                if path.exists() {
+                    trash::delete(&path).map_err(|e| std::io::Error::other(e.to_string()))?;
+                }
             }
         }
         Layout::Default => {
-            let (config, data) = side_roots(layout, defaults);
-            for root in if config == data { vec![config] } else { vec![config, data] } {
+            for root in all_roots(layout, defaults) {
                 if root.exists() {
                     trash::delete(&root).map_err(|e| std::io::Error::other(e.to_string()))?;
                 }
@@ -577,22 +741,30 @@ pub fn trash(layout: &Layout, defaults: &(PathBuf, PathBuf)) -> std::io::Result<
 /// custom tool configured by its old absolute path keeps working against the
 /// new location. Longer (entry-specific) replacements run before the bare
 /// roots.
-pub fn rewrite(from: &Layout, to: &Layout, defaults: &(PathBuf, PathBuf)) -> std::io::Result<()> {
+pub fn rewrite(from: &Layout, to: &Layout, defaults: &PlatformDirs) -> std::io::Result<()> {
     let mut rules: Vec<(String, String)> = Vec::new();
     for &(name, target) in MOVES {
-        rules.push((
-            entry_path(name, target, from, defaults).to_string_lossy().into_owned(),
-            entry_path(name, target, to, defaults).to_string_lossy().into_owned(),
-        ));
+        let to_path = entry_path(name, target, to, defaults).to_string_lossy().into_owned();
+        for src in source_candidates(name, target, from, defaults) {
+            rules.push((src.to_string_lossy().into_owned(), to_path.clone()));
+        }
     }
-    let (from_cfg_a, from_sys_a) = agents_dirs(from, defaults);
-    let (to_cfg_a, to_sys_a) = agents_dirs(to, defaults);
+    let (from_cfg_a, from_data_a) = agents_dirs(from, defaults);
+    let (to_cfg_a, to_data_a) = agents_dirs(to, defaults);
     rules.push((from_cfg_a.to_string_lossy().into_owned(), to_cfg_a.to_string_lossy().into_owned()));
-    rules.push((from_sys_a.to_string_lossy().into_owned(), to_sys_a.to_string_lossy().into_owned()));
+    rules.push((from_data_a.to_string_lossy().into_owned(), to_data_a.to_string_lossy().into_owned()));
     let (from_cfg, from_data) = side_roots(from, defaults);
     let (to_cfg, to_data) = side_roots(to, defaults);
     rules.push((from_cfg.to_string_lossy().into_owned(), to_cfg.to_string_lossy().into_owned()));
     rules.push((from_data.to_string_lossy().into_owned(), to_data.to_string_lossy().into_owned()));
+    // Windows' local root folds into the new base's data side: a JDK or tool
+    // path under %LOCALAPPDATA% must keep working, and so must agent state.
+    for root in all_roots(from, defaults) {
+        if root != from_cfg && root != from_data {
+            rules.push((root.join("agents").to_string_lossy().into_owned(), to_data_a.to_string_lossy().into_owned()));
+            rules.push((root.to_string_lossy().into_owned(), to_data.to_string_lossy().into_owned()));
+        }
+    }
     rules.sort_by_key(|(from, _)| std::cmp::Reverse(from.len()));
 
     // The files rewritten live in the *target* layout: the global settings,
@@ -641,6 +813,36 @@ pub(crate) fn copy_tree(src: &Path, target: &Path) -> std::io::Result<()> {
 /// Removes a file or a directory tree, best-effort.
 fn remove_any(path: &Path) -> std::io::Result<()> {
     if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }
+}
+
+/// One-time migration of the legacy platform layout into the built-in base.
+///
+/// Runs before anything reads the base. Only a pure legacy install moves: no
+/// `OPENIDEA_HOME`, no user-chosen base, and no recorded previous location (a
+/// previous line means the user already decided; the dialog owns that move).
+/// The old directories are left in place — the moved entries are gone and the
+/// leftovers (window state, logs, unknown files) are harmless — and the
+/// pointer is untouched: its `default` sentinel already resolves to the
+/// built-in base.
+pub fn bootstrap_legacy_migrate() {
+    let resolved = current();
+    if std::env::var_os("OPENIDEA_HOME").is_some() || !resolved.is_default() {
+        return;
+    }
+    let pointer = std::fs::read_to_string(pointer_file(&resolved.defaults.config)).ok();
+    if parse_pointer(pointer.as_deref().unwrap_or("")).1.is_some() {
+        return;
+    }
+    if pending_entries(&Layout::Default, &resolved.layout, &resolved.defaults) == 0 {
+        return;
+    }
+    let result = migrate(&Layout::Default, &resolved.layout, &resolved.defaults, migration_incomplete(resolved));
+    if result.failed == 0
+        && let Err(error) = rewrite(&Layout::Default, &resolved.layout, &resolved.defaults)
+    {
+        tracing::warn!("config migration: rewriting stored paths failed: {error}");
+    }
+    tracing::info!("config migration: {} entries moved into the default base ({} failed)", result.moved, result.failed);
 }
 
 #[cfg(test)]
@@ -717,21 +919,27 @@ mod tests {
         base
     }
 
-    fn defaults_of(config: &Path, data: &Path) -> (PathBuf, PathBuf) {
-        (config.to_path_buf(), data.to_path_buf())
+    /// A macOS/Linux-shaped platform layout: the local root is the data root.
+    fn defaults_of(config: &Path, data: &Path) -> PlatformDirs {
+        PlatformDirs { config: config.to_path_buf(), data: data.to_path_buf(), local: data.to_path_buf() }
+    }
+
+    /// A Windows-shaped platform layout: rebuildable data has its own root.
+    fn windows_dirs(config: &Path, data: &Path, local: &Path) -> PlatformDirs {
+        PlatformDirs { config: config.to_path_buf(), data: data.to_path_buf(), local: local.to_path_buf() }
     }
 
     #[test]
     fn env_wins_over_pointer_and_default() {
         let defaults = defaults_of(Path::new("/c"), Path::new("/d"));
-        let (layout, _) = resolve(Some("/custom"), Some("/pointer"), &defaults, Path::new("/h"));
+        let (layout, _) = resolve(Some("/custom"), Some("/pointer"), &defaults, None, Path::new("/h"));
         assert_eq!(layout, Layout::Custom(PathBuf::from("/custom")));
     }
 
     #[test]
     fn env_tilde_expands() {
         let defaults = defaults_of(Path::new("/c"), Path::new("/d"));
-        let (layout, _) = resolve(Some("~/env"), None, &defaults, Path::new("/h"));
+        let (layout, _) = resolve(Some("~/env"), None, &defaults, None, Path::new("/h"));
         assert_eq!(layout, Layout::Custom(PathBuf::from("/h/env")));
     }
 
@@ -743,9 +951,9 @@ mod tests {
         fs::create_dir_all(&target).unwrap();
         let defaults = defaults_of(Path::new("/c"), Path::new("/d"));
         // An empty or relative env value is not a choice: the pointer decides.
-        let (layout, _) = resolve(Some(""), Some("~/p"), &defaults, &home);
+        let (layout, _) = resolve(Some(""), Some("~/p"), &defaults, None, &home);
         assert_eq!(layout, Layout::Custom(target));
-        let (layout, _) = resolve(Some("relative"), Some("~/p"), &defaults, &home);
+        let (layout, _) = resolve(Some("relative"), Some("~/p"), &defaults, None, &home);
         assert_eq!(layout, Layout::Custom(home.join("p")));
     }
 
@@ -757,14 +965,14 @@ mod tests {
         fs::create_dir_all(&target).unwrap();
         let defaults = defaults_of(Path::new("/c"), Path::new("/d"));
         // `~` expands and stray whitespace (a hand-edited file) is trimmed.
-        let (layout, _) = resolve(None, Some("~/moved-base \n"), &defaults, &home);
+        let (layout, _) = resolve(None, Some("~/moved-base \n"), &defaults, None, &home);
         assert_eq!(layout, Layout::Custom(target));
     }
 
     #[test]
     fn pointer_sentinel_default_restores_the_platform_dirs() {
         let defaults = defaults_of(Path::new("/c"), Path::new("/d"));
-        let (layout, locations) = resolve(None, Some("default\n/old-base"), &defaults, Path::new("/h"));
+        let (layout, locations) = resolve(None, Some("default\n/old-base"), &defaults, None, Path::new("/h"));
         assert_eq!(layout, Layout::Default);
         assert_eq!(locations, Locations { config: PathBuf::from("/c"), data: PathBuf::from("/d") });
     }
@@ -772,14 +980,14 @@ mod tests {
     #[test]
     fn dangling_or_relative_pointer_falls_back_to_the_default() {
         let defaults = defaults_of(Path::new("/c"), Path::new("/d"));
-        assert_eq!(resolve(None, Some("/missing"), &defaults, Path::new("/h")).0, Layout::Default);
-        assert_eq!(resolve(None, Some("relative"), &defaults, Path::new("/h")).0, Layout::Default);
+        assert_eq!(resolve(None, Some("/missing"), &defaults, None, Path::new("/h")).0, Layout::Default);
+        assert_eq!(resolve(None, Some("relative"), &defaults, None, Path::new("/h")).0, Layout::Default);
     }
 
     #[test]
     fn default_is_the_passed_directories() {
         let defaults = defaults_of(Path::new("/c"), Path::new("/d"));
-        let (layout, locations) = resolve(None, None, &defaults, Path::new("/h"));
+        let (layout, locations) = resolve(None, None, &defaults, None, Path::new("/h"));
         assert_eq!(layout, Layout::Default);
         assert_eq!(locations, Locations { config: PathBuf::from("/c"), data: PathBuf::from("/d") });
     }
@@ -787,7 +995,7 @@ mod tests {
     #[test]
     fn custom_base_splits_config_and_system() {
         let defaults = defaults_of(Path::new("/c"), Path::new("/d"));
-        let (layout, locations) = resolve(Some("/b"), None, &defaults, Path::new("/h"));
+        let (layout, locations) = resolve(Some("/b"), None, &defaults, None, Path::new("/h"));
         assert_eq!(layout, Layout::Custom(PathBuf::from("/b")));
         assert_eq!(locations, Locations { config: PathBuf::from("/b/config"), data: PathBuf::from("/b/system") });
     }
@@ -797,28 +1005,80 @@ mod tests {
         // The switch guarantee: after the user chooses a base, nothing reads
         // the platform dirs — every consumer root hangs off the base.
         let defaults = defaults_of(Path::new("/platform-config"), Path::new("/platform-data"));
-        let (layout, locations) = resolve(Some("/base"), None, &defaults, Path::new("/h"));
+        let (layout, locations) = resolve(Some("/base"), None, &defaults, None, Path::new("/h"));
         assert_eq!(locations.config, PathBuf::from("/base/config"));
         assert_eq!(locations.data, PathBuf::from("/base/system"));
         assert_eq!(plugins_dir(&layout, &locations), PathBuf::from("/base/config"));
         assert_eq!(log_dir(&layout, "id"), Some(PathBuf::from("/base/log")));
         assert_eq!(login_cache_root(&layout, &locations, "id"), PathBuf::from("/base/system"));
-        assert_eq!(tools_home(&layout, "id"), Some(PathBuf::from("/base")));
+        assert_eq!(tools_home(&layout, &defaults), Some(PathBuf::from("/base")));
     }
 
     #[test]
     fn default_layout_keeps_the_platform_dirs() {
-        // Without a switch, every consumer keeps the platform locations.
-        // `tools_home`, the log dir and the login cache read `dirs::` on the
-        // real machine, so only their identifier suffix is pinned here.
+        // Without a home directory there is no built-in base: every consumer
+        // keeps the platform locations.
         let defaults = defaults_of(Path::new("/platform-config"), Path::new("/platform-data"));
-        let (layout, locations) = resolve(None, None, &defaults, Path::new("/h"));
+        let (layout, locations) = resolve(None, None, &defaults, None, Path::new("/h"));
         assert_eq!(locations.config, PathBuf::from("/platform-config"));
         assert_eq!(locations.data, PathBuf::from("/platform-data"));
         assert_eq!(plugins_dir(&layout, &locations), PathBuf::from("/platform-data"));
-        assert!(tools_home(&layout, "id").is_some_and(|d| d.ends_with("id")));
-        assert!(login_cache_root(&layout, &locations, "id").ends_with("id"));
+        assert_eq!(tools_home(&layout, &defaults), Some(PathBuf::from("/platform-data")));
+        assert_eq!(login_cache_root(&layout, &locations, "id"), dirs::cache_dir().unwrap().join("id"));
         assert!(log_dir(&layout, "id").is_some_and(|d| d.ends_with("id")));
+    }
+
+    #[test]
+    fn the_built_in_base_is_dot_openidea_and_keeps_worktrees_apart() {
+        let home = Path::new("/home/u");
+        assert_eq!(default_base("ai.l0ng.openidea", home), home.join(".openidea"));
+        let dev = format!("{}w158e9c5954b7bf64", DEV_PREFIX);
+        assert_eq!(default_base(&dev, home), home.join(".openidea/dev/w158e9c5954b7bf64"));
+    }
+
+    #[test]
+    fn no_pointer_resolves_to_the_built_in_base() {
+        let defaults = defaults_of(Path::new("/c"), Path::new("/d"));
+        let built_in = PathBuf::from("/home/u/.openidea");
+        let (layout, locations) = resolve(None, None, &defaults, Some(&built_in), Path::new("/home/u"));
+        assert_eq!(layout, Layout::Custom(built_in.clone()));
+        assert_eq!(locations, Locations { config: built_in.join("config"), data: built_in.join("system") });
+
+        // `Reset to default` writes the sentinel; it means the same base.
+        let (layout, _) = resolve(None, Some("default"), &defaults, Some(&built_in), Path::new("/home/u"));
+        assert_eq!(layout, Layout::Custom(built_in));
+    }
+
+    #[test]
+    fn the_platform_alias_keeps_the_legacy_layout() {
+        let defaults = defaults_of(Path::new("/c"), Path::new("/d"));
+        let (layout, _) = resolve(None, Some("platform"), &defaults, Some(Path::new("/b")), Path::new("/h"));
+        assert_eq!(layout, Layout::Default);
+    }
+
+    #[test]
+    fn is_default_names_only_the_built_in_base() {
+        let tmp = TempDir::new().unwrap();
+        let defaults = defaults_of(&tmp.path().join("c"), &tmp.path().join("d"));
+        let built_in = tmp.path().join(".openidea");
+        let resolved = Resolved {
+            layout: Layout::Custom(built_in.clone()),
+            locations: Locations { config: built_in.join("config"), data: built_in.join("system") },
+            default_base: Some(built_in.clone()),
+            defaults: defaults.clone(),
+            home: tmp.path().join("home"),
+        };
+        assert!(resolved.is_default());
+        assert_eq!(resolved.base(), built_in.as_path());
+
+        let other = Resolved {
+            layout: Layout::Custom(tmp.path().join("other")),
+            locations: Locations { config: PathBuf::new(), data: PathBuf::new() },
+            default_base: Some(built_in),
+            defaults,
+            home: tmp.path().join("home"),
+        };
+        assert!(!other.is_default());
     }
 
     #[test]
@@ -919,6 +1179,96 @@ mod tests {
         assert_eq!(result.moved, MOVES.len() + 4);
         assert!(to_base.join("tools/keep").is_file());
         assert!(to_base.join("config/settings.toml").is_file());
+    }
+
+    #[test]
+    fn windows_rebuildable_entries_are_found_in_the_local_root() {
+        let tmp = TempDir::new().unwrap();
+        let config = tmp.path().join("config");
+        let data = tmp.path().join("data");
+        let local = tmp.path().join("local");
+        for dir in [&config, &data, &local] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        file(&config, "settings.toml");
+        folder(&local, "tools");
+        folder(&data, "history");
+        // A stale roaming copy loses to the local root, where `data_dirs`
+        // moved rebuildable data.
+        folder(&data, "tools");
+        let defaults = windows_dirs(&config, &data, &local);
+        let to = Layout::Custom(tmp.path().join("base"));
+        fs::create_dir_all(tmp.path().join("base")).unwrap();
+
+        let result = migrate(&Layout::Default, &to, &defaults, false);
+
+        assert_eq!(result.failed, 0);
+        assert!(tmp.path().join("base/config/settings.toml").is_file());
+        // `tools` and `language-server-runtimes` keep their top-level target:
+        // a base's managed tools sit beside `config/` and `system/`.
+        assert!(tmp.path().join("base/tools/keep").is_file());
+        assert!(tmp.path().join("base/system/history/keep").is_file());
+        assert!(!local.join("tools").exists(), "the moved entry leaves the local root");
+        assert!(data.join("tools/keep").is_file(), "the superseded roaming copy stays");
+    }
+
+    #[test]
+    fn windows_agent_state_is_split_across_the_three_roots() {
+        let tmp = TempDir::new().unwrap();
+        let config = tmp.path().join("config");
+        let data = tmp.path().join("data");
+        let local = tmp.path().join("local");
+        for dir in [&config, &data, &local] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        file(&config, "agents/my-agent.toml");
+        file(&data, "agents/models.json");
+        folder(&local, "agents/tools");
+        let defaults = windows_dirs(&config, &data, &local);
+        let to = Layout::Custom(tmp.path().join("base"));
+        fs::create_dir_all(tmp.path().join("base")).unwrap();
+
+        let result = migrate(&Layout::Default, &to, &defaults, false);
+
+        assert_eq!(result.failed, 0);
+        assert!(tmp.path().join("base/config/agents/my-agent.toml").is_file());
+        assert!(tmp.path().join("base/system/agents/models.json").is_file());
+        assert!(tmp.path().join("base/system/agents/tools/keep").is_file());
+    }
+
+    #[test]
+    fn a_partial_migration_marks_the_target_for_retry() {
+        let tmp = TempDir::new().unwrap();
+        let config = tmp.path().join("default-config");
+        let data = tmp.path().join("default-data");
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        file(&config, "settings.toml");
+        folder(&data, "lsp");
+        let defaults = defaults_of(&config, &data);
+        let base = tmp.path().join("base");
+        fs::create_dir_all(base.join("config")).unwrap();
+        // A file where the target's data side should be: the lsp move fails.
+        file(&base, "system");
+        let to = Layout::Custom(base.clone());
+
+        let first = migrate(&Layout::Default, &to, &defaults, false);
+
+        assert_eq!(first, Migration { moved: 1, failed: 1 });
+        assert!(base.join("config/settings.toml").is_file());
+        assert!(data.join("lsp/keep").is_file(), "the failed move stays behind");
+        let marker = base.join("config").join(MIGRATION_MARKER);
+        assert!(marker.is_file(), "the retry marker records the failure");
+
+        // The boot may have written fresh files since; the marker lets the
+        // retry replace them. Already moved entries are gone and untouched.
+        fs::remove_file(base.join("system")).unwrap();
+        fs::create_dir_all(base.join("system")).unwrap();
+        let second = migrate(&Layout::Default, &to, &defaults, true);
+
+        assert_eq!(second, Migration { moved: 1, failed: 0 });
+        assert!(base.join("system/lsp/keep").is_file());
+        assert!(!marker.exists(), "a clean migration clears the marker");
     }
 
     #[test]
@@ -1131,7 +1481,7 @@ mod tests {
         let recorded = fs::read_to_string(pointer_file(&default_config)).unwrap();
         assert_eq!(recorded, target.to_string_lossy());
         let defaults = defaults_of(&default_config, &tmp.path().join("default-data"));
-        let (layout, _) = resolve(None, Some(&recorded), &defaults, &tmp.path().join("home"));
+        let (layout, _) = resolve(None, Some(&recorded), &defaults, None, &tmp.path().join("home"));
         assert_eq!(layout, Layout::Custom(target));
     }
 
@@ -1144,6 +1494,7 @@ mod tests {
         let resolved = Resolved {
             layout: Layout::Custom(tmp.path().join("new-base")),
             locations: Locations { config: PathBuf::new(), data: PathBuf::new() },
+            default_base: None,
             defaults: defaults.clone(),
             home: home.clone(),
         };
@@ -1177,6 +1528,7 @@ mod tests {
         let resolved = Resolved {
             layout: Layout::Custom(x.clone()),
             locations: Locations { config: x.join("config"), data: x.join("system") },
+            default_base: None,
             defaults: defaults.clone(),
             home: tmp.path().join("home"),
         };
@@ -1194,6 +1546,48 @@ mod tests {
         fs::remove_file(x.join("config/settings.toml")).unwrap();
         write_pointer(&default_config, &Layout::Custom(x.clone()), None).unwrap();
         assert_eq!(data_home(&resolved), Layout::Custom(x));
+    }
+
+    #[test]
+    fn data_home_chains_even_when_the_prompt_was_silenced() {
+        // "Don't ask again" silences the dialog, not the location: a later
+        // switch must still record where the data actually lives.
+        let tmp = TempDir::new().unwrap();
+        let default_config = tmp.path().join("default-config");
+        fs::create_dir_all(&default_config).unwrap();
+        let defaults = defaults_of(&default_config, &tmp.path().join("default-data"));
+        let p = tmp.path().join("p-base");
+        fs::create_dir_all(p.join("config")).unwrap();
+        file(&p, "config/settings.toml");
+        let x = tmp.path().join("x-base");
+        fs::create_dir_all(&x).unwrap();
+        let resolved = Resolved {
+            layout: Layout::Custom(x.clone()),
+            locations: Locations { config: x.join("config"), data: x.join("system") },
+            default_base: None,
+            defaults,
+            home: tmp.path().join("home"),
+        };
+        write_pointer(&default_config, &Layout::Custom(x), Some(&Layout::Custom(p.clone()))).unwrap();
+        write_skip_marker(&default_config).unwrap();
+
+        assert_eq!(data_home(&resolved), Layout::Custom(p));
+    }
+
+    #[test]
+    fn a_custom_base_trashes_only_what_it_owns() {
+        // The base may also hold the agent worktrees or a remote server's
+        // data; pin the set a switch may delete.
+        assert_eq!(CUSTOM_TRASH, &["config", "system", "log", "tools", "language-server-runtimes"]);
+    }
+
+    #[test]
+    fn a_base_holding_only_agent_worktrees_is_empty_for_the_app() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join(".openidea");
+        folder(&base, "worktrees/proj");
+        let defaults = defaults_of(&tmp.path().join("c"), &tmp.path().join("d"));
+        assert!(!layout_has_data(&Layout::Custom(base), &defaults));
     }
 
     #[test]
@@ -1289,13 +1683,19 @@ mod tests {
         fs::create_dir_all(&current).unwrap();
 
         // Inside or containing the defaults, or the current base: rejected.
-        assert!(base_conflicts(&config.join("nested"), &defaults, Some(&current)));
-        assert!(base_conflicts(tmp.path(), &defaults, Some(&current)));
-        assert!(base_conflicts(&current.join("nested"), &defaults, Some(&current)));
+        assert!(base_conflicts(&config.join("nested"), &defaults, Some(&current), None));
+        assert!(base_conflicts(tmp.path(), &defaults, Some(&current), None));
+        assert!(base_conflicts(&current.join("nested"), &defaults, Some(&current), None));
         // A fresh sibling directory: fine.
         let elsewhere = tmp.path().join("elsewhere");
         fs::create_dir_all(&elsewhere).unwrap();
-        assert!(!base_conflicts(&elsewhere, &defaults, Some(&current)));
+        assert!(!base_conflicts(&elsewhere, &defaults, Some(&current), None));
+        // The built-in base itself is allowed ("reset"), but its contents are
+        // not: a base next to the agent worktrees or a dev base would be bad.
+        let built_in = tmp.path().join("built-in");
+        fs::create_dir_all(built_in.join("worktrees")).unwrap();
+        assert!(!base_conflicts(&built_in, &defaults, Some(&current), Some(&built_in)));
+        assert!(base_conflicts(&built_in.join("worktrees/x"), &defaults, Some(&current), Some(&built_in)));
     }
 
     #[test]

@@ -14,7 +14,7 @@ export const commands = {
 	 *  whether to move the existing data.
 	 */
 	appHomeSet: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("app_home_set", { path })),
-	/**  Records a switch back to the platform defaults; mirrors `app_home_set`. */
+	/**  Records a switch back to the built-in default base; mirrors `app_home_set`. */
 	appHomeReset: () => typedError<null, IdeError>(__TAURI_INVOKE("app_home_reset")),
 	migrationStatus: () => __TAURI_INVOKE<MigrationStatus>("migration_status"),
 	/**
@@ -1868,8 +1868,16 @@ export type AndroidDevice = {
 export type AppHome = {
 	configDir: IpcPath,
 	dataDir: IpcPath,
-	/**  The custom base itself, when one is set (config/ and system/ under it). */
+	/**
+	 *  The base itself (config/ and system/ under it); absent only when the
+	 *  home directory is unknown and the platform dirs are the fallback.
+	 */
 	base: IpcPath | null,
+	/**
+	 *  Whether `base` is the built-in default (`~/.openidea`), so the settings
+	 *  row offers a reset only for a chosen base.
+	 */
+	isDefault: boolean,
 	envOverride: boolean,
 };
 

@@ -43,8 +43,12 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
 pub struct AppHome {
     pub config_dir: ide_core::IpcPath,
     pub data_dir: ide_core::IpcPath,
-    /// The custom base itself, when one is set (config/ and system/ under it).
+    /// The base itself (config/ and system/ under it); absent only when the
+    /// home directory is unknown and the platform dirs are the fallback.
     pub base: Option<ide_core::IpcPath>,
+    /// Whether `base` is the built-in default (`~/.openidea`), so the settings
+    /// row offers a reset only for a chosen base.
+    pub is_default: bool,
     pub env_override: bool,
 }
 
@@ -60,6 +64,7 @@ pub fn app_home() -> AppHome {
         config_dir: resolved.locations.config.clone().into(),
         data_dir: resolved.locations.data.clone().into(),
         base,
+        is_default: resolved.is_default(),
         env_override: std::env::var_os("OPENIDEA_HOME").is_some(),
     }
 }
@@ -83,7 +88,7 @@ pub fn app_home_set(path: String) -> IdeResult<()> {
     {
         // The same directory: nothing to switch, but choosing it again
         // revives the prompt a decline may have silenced.
-        crate::paths::clear_skip_marker(&resolved.defaults.0);
+        crate::paths::clear_skip_marker(&resolved.defaults.config);
         return Ok(());
     }
     std::fs::create_dir_all(&target).map_err(|e| IdeError::internal(e.to_string()))?;
@@ -91,7 +96,7 @@ pub fn app_home_set(path: String) -> IdeResult<()> {
         crate::paths::Layout::Custom(base) => Some(base.as_path()),
         crate::paths::Layout::Default => None,
     };
-    if crate::paths::base_conflicts(&target, &resolved.defaults, current) {
+    if crate::paths::base_conflicts(&target, &resolved.defaults, current, resolved.default_base.as_deref()) {
         return Err(IdeError::internal(
             "the configuration directory must not be inside or contain an existing data directory",
         ));
@@ -99,16 +104,16 @@ pub fn app_home_set(path: String) -> IdeResult<()> {
     // The pointer records where the data actually lives (see `paths::data_home`),
     // so the next start can offer to migrate it; a new switch also asks again.
     crate::paths::write_pointer(
-        &resolved.defaults.0,
+        &resolved.defaults.config,
         &crate::paths::Layout::Custom(target),
         Some(&crate::paths::data_home(resolved)),
     )
     .map_err(|e| IdeError::internal(e.to_string()))?;
-    crate::paths::clear_skip_marker(&resolved.defaults.0);
+    crate::paths::clear_skip_marker(&resolved.defaults.config);
     Ok(())
 }
 
-/// Records a switch back to the platform defaults; mirrors `app_home_set`.
+/// Records a switch back to the built-in default base; mirrors `app_home_set`.
 #[tauri::command]
 #[specta::specta]
 pub fn app_home_reset() -> IdeResult<()> {
@@ -116,17 +121,18 @@ pub fn app_home_reset() -> IdeResult<()> {
     if std::env::var_os("OPENIDEA_HOME").is_some() {
         return Err(IdeError::internal("OPENIDEA_HOME is set and takes precedence"));
     }
-    // Already on the defaults: nothing to record (an idempotent no-op).
-    if !matches!(resolved.layout, crate::paths::Layout::Custom(_)) {
+    // Already on the built-in base: nothing to record (an idempotent no-op).
+    if resolved.is_default() {
         return Ok(());
     }
+    // The `default` sentinel resolves to the built-in base on the next start.
     crate::paths::write_pointer(
-        &resolved.defaults.0,
+        &resolved.defaults.config,
         &crate::paths::Layout::Default,
         Some(&crate::paths::data_home(resolved)),
     )
     .map_err(|e| IdeError::internal(e.to_string()))?;
-    crate::paths::clear_skip_marker(&resolved.defaults.0);
+    crate::paths::clear_skip_marker(&resolved.defaults.config);
     Ok(())
 }
 
@@ -141,15 +147,10 @@ pub struct MigrationStatus {
     pub to: Vec<ide_core::IpcPath>,
 }
 
-/// The directories a layout writes (the two sides, or one when the platform
-/// keeps them together).
-fn side_dirs(layout: &crate::paths::Layout, defaults: &(PathBuf, PathBuf)) -> Vec<ide_core::IpcPath> {
-    let (config, data) = crate::paths::side_roots(layout, defaults);
-    let mut dirs = vec![config];
-    if data != dirs[0] {
-        dirs.push(data);
-    }
-    dirs.into_iter().map(Into::into).collect()
+/// The directories a layout writes (the platform's three roots, deduplicated,
+/// or a base's two sides).
+fn side_dirs(layout: &crate::paths::Layout, defaults: &crate::paths::PlatformDirs) -> Vec<ide_core::IpcPath> {
+    crate::paths::all_roots(layout, defaults).into_iter().map(Into::into).collect()
 }
 
 #[tauri::command]
@@ -182,7 +183,10 @@ pub fn migration_apply(state: State<'_, AppState>) -> crate::paths::Migration {
         return crate::paths::Migration::default();
     };
     let to = &resolved.layout;
-    let result = crate::paths::migrate(&from, to, &resolved.defaults, state.fresh_target);
+    // A target the boot filled with fresh files is replaceable; so is one a
+    // previous failed migration already marked.
+    let replace = state.fresh_target || crate::paths::migration_incomplete(resolved);
+    let result = crate::paths::migrate(&from, to, &resolved.defaults, replace);
     if result.failed == 0 {
         if let Err(e) = crate::paths::rewrite(&from, to, &resolved.defaults) {
             tracing::warn!("migration: rewriting stored paths failed: {e}");
@@ -191,13 +195,13 @@ pub fn migration_apply(state: State<'_, AppState>) -> crate::paths::Migration {
             tracing::warn!("migration: moving the previous directories to the trash failed: {e}");
         }
         // The trash may have taken the pointer file with it (it sits inside
-        // the default config dir): drop it when the target is the defaults,
-        // else rewrite it so the new base stays authoritative.
+        // the platform config dir): drop it when the target is the platform
+        // layout, else rewrite it so the new base stays authoritative.
         match to {
-            crate::paths::Layout::Default => crate::paths::remove_pointer(&resolved.defaults.0),
+            crate::paths::Layout::Default => crate::paths::remove_pointer(&resolved.defaults.config),
             crate::paths::Layout::Custom(base) => {
                 let _ = crate::paths::write_pointer(
-                    &resolved.defaults.0,
+                    &resolved.defaults.config,
                     &crate::paths::Layout::Custom(base.clone()),
                     None,
                 );
@@ -215,7 +219,7 @@ pub fn migration_apply(state: State<'_, AppState>) -> crate::paths::Migration {
 pub fn migration_decline(remember: bool) -> IdeResult<()> {
     let resolved = crate::paths::current();
     if remember {
-        crate::paths::write_skip_marker(&resolved.defaults.0).map_err(|e| IdeError::internal(e.to_string()))?;
+        crate::paths::write_skip_marker(&resolved.defaults.config).map_err(|e| IdeError::internal(e.to_string()))?;
     }
     Ok(())
 }

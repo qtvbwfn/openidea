@@ -67,8 +67,8 @@ impl AppState {
                 syntax.get_or_init(|| Arc::new(Syntax::new()));
             })?;
         }
-        // The resolved location: the platform dirs by default, a user-chosen
-        // base's config/ and system/ otherwise (`crate::paths`). A previous
+        // The resolved location: the built-in base (`~/.openidea`), a
+        // user-chosen base's config/ and system/ otherwise (`crate::paths`). A previous
         // location's files are NOT folded in here — the migration dialog
         // asks first (see `commands::app::migration_*`); this start only
         // records whether the location had no app data, so a migration

@@ -13,7 +13,7 @@ fn base_reads_the_pointer_file_from_its_fixed_location() {
     let target = tmp.path().join("moved-base");
     std::fs::create_dir_all(&target).unwrap();
     let defaults = openidea_lib::paths::default_dirs("ai.l0ng.openidea");
-    openidea_lib::paths::write_pointer(&defaults.0, &openidea_lib::paths::Layout::Custom(target.clone()), None)
+    openidea_lib::paths::write_pointer(&defaults.config, &openidea_lib::paths::Layout::Custom(target.clone()), None)
         .unwrap();
 
     openidea_lib::paths::init("ai.l0ng.openidea");
@@ -29,5 +29,5 @@ fn base_reads_the_pointer_file_from_its_fixed_location() {
     assert_eq!(openidea_lib::paths::plugins_dir(&layout, &locations), target.join("config"));
     assert_eq!(openidea_lib::paths::log_dir(&layout, "ai.l0ng.openidea"), Some(target.join("log")));
     assert_eq!(openidea_lib::paths::login_cache_root(&layout, &locations, "ai.l0ng.openidea"), target.join("system"));
-    assert_eq!(openidea_lib::paths::tools_home(&layout, "ai.l0ng.openidea"), Some(target));
+    assert_eq!(openidea_lib::paths::tools_home(&layout, &resolved.defaults), Some(target));
 }

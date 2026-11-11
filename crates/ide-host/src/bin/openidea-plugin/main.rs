@@ -424,9 +424,15 @@ fn plugins_dir() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("OPENIDEA_PLUGINS_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    dirs::data_dir()
-        .map(|d| d.join("ai.l0ng.openidea").join("plugins"))
-        .ok_or_else(|| "cannot find the app data directory; set OPENIDEA_PLUGINS_DIR".into())
+    // The app's base: `OPENIDEA_HOME` when it overrides the built-in
+    // `~/.openidea`; plugins live on its config side. Development worktrees
+    // have their own base, so they pass `OPENIDEA_PLUGINS_DIR`.
+    if let Some(base) = std::env::var_os("OPENIDEA_HOME") {
+        return Ok(PathBuf::from(base).join("config").join("plugins"));
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".openidea").join("config").join("plugins"))
+        .ok_or_else(|| "cannot find the home directory; set OPENIDEA_PLUGINS_DIR".into())
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
