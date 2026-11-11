@@ -59,6 +59,10 @@ platform-keyed. The embedded `java-usages`/`kotlin-bridge` jars self-heal.
 remote server's `plugin-pins.json` and `remote-plugins` belong to its own
 `~/.openidea/data`, not to this layout.
 
+Installed-tool launchers (`tools/<tool>/bin/<command>`) embed absolute paths;
+the migration rewrites them to the new base, and new launchers are written
+relative to their own directory so a moved tools tree keeps working.
+
 ## After an upstream sync
 
 `src-tauri/tests/paths_guard.rs` fails when the shell reads a platform app

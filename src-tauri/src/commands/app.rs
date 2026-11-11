@@ -193,6 +193,8 @@ pub fn migration_apply(state: State<'_, AppState>) -> crate::paths::Migration {
         if let Err(e) = crate::paths::rewrite(&from, to, &resolved.defaults) {
             tracing::warn!("migration: rewriting stored paths failed: {e}");
         }
+        // Launchers installed under the old base embed its absolute paths.
+        crate::paths::repair_moved_tool_launchers(&from, to, &resolved.defaults);
         if let Err(e) = crate::paths::trash(&from, &resolved.defaults) {
             tracing::warn!("migration: moving the previous directories to the trash failed: {e}");
         }

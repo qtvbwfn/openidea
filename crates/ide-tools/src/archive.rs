@@ -314,6 +314,38 @@ pub fn locate(root: &Path, names: &[String]) -> Option<PathBuf> {
     best.map(|(_, _, p)| p)
 }
 
+/// A lexical path from `from` to `to` when both share a filesystem root, so a
+/// launcher can address its target relative to its own directory. `None` for a
+/// target outside the tools tree (a system tool): those keep absolute paths.
+fn relative(from: &Path, to: &Path) -> Option<PathBuf> {
+    let from: Vec<_> = from.components().collect();
+    let to: Vec<_> = to.components().collect();
+    if from.is_empty() || to.is_empty() || from.first() != to.first() {
+        return None;
+    }
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut out = PathBuf::new();
+    for _ in common..from.len() {
+        out.push("..");
+    }
+    for component in &to[common..] {
+        out.push(component.as_os_str());
+    }
+    Some(out)
+}
+
+/// Escapes a relative path for a double-quoted shell string.
+#[cfg(unix)]
+fn sh_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', r"\\").replace('"', "\\\"").replace('$', r"\$").replace('`', r"\`")
+}
+
+/// A relative path with Windows separators (`%~dp0` ends with one).
+#[cfg(not(unix))]
+fn cmd_path(path: &Path) -> String {
+    path.to_string_lossy().replace('/', "\\")
+}
+
 /// Creates `bin_dir/<command>` that runs `target`: a shell wrapper on Unix
 /// (keeps the target's own directory layout intact), a `.cmd` shim on Windows.
 /// Like [`link_executable`], with `env` set for `target`.
@@ -322,17 +354,40 @@ pub fn env_wrapper(bin_dir: &Path, command: &str, target: &Path, env: &[(&str, &
     #[cfg(unix)]
     {
         let quote = |p: &Path| format!("'{}'", p.to_string_lossy().replace('\'', r"'\''"));
-        let vars: String = env.iter().map(|(k, v)| format!("{k}={} ", quote(v))).collect();
+        // A base switch moves the tools tree; a launcher relative to its own
+        // directory keeps working, where an absolute one would name the old
+        // location.
+        let vars: String = env
+            .iter()
+            .map(|(k, v)| match relative(bin_dir, v) {
+                Some(rel) => format!("{k}=\"$(dirname \"$0\")/{}\" ", sh_path(&rel)),
+                None => format!("{k}={} ", quote(v)),
+            })
+            .collect();
+        let command_line = match relative(bin_dir, target) {
+            Some(rel) => format!("\"$(dirname \"$0\")/{}\"", sh_path(&rel)),
+            None => quote(target),
+        };
         let link = bin_dir.join(command);
-        fs::write(&link, format!("#!/bin/sh\n{vars}exec {} \"$@\"\n", quote(target)))?;
+        fs::write(&link, format!("#!/bin/sh\n{vars}exec {command_line} \"$@\"\n"))?;
         make_executable(&link)?;
         Ok(link)
     }
     #[cfg(not(unix))]
     {
         let link = bin_dir.join(format!("{command}.cmd"));
-        let vars: String = env.iter().map(|(k, v)| format!("set \"{k}={}\"\r\n", v.display())).collect();
-        fs::write(&link, format!("@echo off\r\nsetlocal\r\n{vars}\"{}\" %*\r\n", target.display()))?;
+        let vars: String = env
+            .iter()
+            .map(|(k, v)| match relative(bin_dir, v) {
+                Some(rel) => format!("set \"{k}=%~dp0{}\"\r\n", cmd_path(&rel)),
+                None => format!("set \"{k}={}\"\r\n", v.display()),
+            })
+            .collect();
+        let target = match relative(bin_dir, target) {
+            Some(rel) => format!("\"%~dp0{}\"", cmd_path(&rel)),
+            None => format!("\"{}\"", target.display()),
+        };
+        fs::write(&link, format!("@echo off\r\nsetlocal\r\n{vars}{target} %*\r\n"))?;
         Ok(link)
     }
 }
@@ -345,10 +400,16 @@ pub fn link_executable(bin_dir: &Path, command: &str, target: &Path) -> IdeResul
         if link == target {
             return Ok(link);
         }
-        let quoted = target.to_string_lossy().replace('\'', r"'\''");
         // A Node script without a shebang (e.g. js-debug's dapDebugServer.js) runs through `node`.
         let runner = if target.extension().is_some_and(|e| e == "js") { "node " } else { "" };
-        fs::write(&link, format!("#!/bin/sh\nexec {runner}'{quoted}' \"$@\"\n"))?;
+        let command_line = match relative(bin_dir, target) {
+            Some(rel) => format!("exec {runner}\"$(dirname \"$0\")/{}\" \"$@\"", sh_path(&rel)),
+            None => {
+                let quoted = target.to_string_lossy().replace('\'', r"'\''");
+                format!("exec {runner}'{quoted}' \"$@\"")
+            }
+        };
+        fs::write(&link, format!("#!/bin/sh\n{command_line}\n"))?;
         make_executable(&link)?;
         make_executable(target)?;
         Ok(link)
@@ -357,7 +418,11 @@ pub fn link_executable(bin_dir: &Path, command: &str, target: &Path) -> IdeResul
     {
         let link = bin_dir.join(format!("{command}.cmd"));
         let runner = if target.extension().is_some_and(|e| e == "js") { "node " } else { "" };
-        fs::write(&link, format!("@echo off\r\n{runner}\"{}\" %*\r\n", target.display()))?;
+        let target = match relative(bin_dir, target) {
+            Some(rel) => format!("\"%~dp0{}\"", cmd_path(&rel)),
+            None => format!("\"{}\"", target.display()),
+        };
+        fs::write(&link, format!("@echo off\r\n{runner}{target} %*\r\n"))?;
         Ok(link)
     }
 }
@@ -753,5 +818,41 @@ mod tests {
         let link = link_executable(&tmp.path().join("bin"), "tool", &target).unwrap();
         let out = std::process::Command::new(&link).arg("there").output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi there");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_wrapper_follows_a_moved_tool_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("tool");
+        let target = root.join("dist dir/tool");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, "#!/bin/sh\necho \"moved $1\"\n").unwrap();
+        make_executable(&target).unwrap();
+        link_executable(&root.join("bin"), "tool", &target).unwrap();
+
+        // A base switch moves the whole tool directory; the launcher must follow.
+        let moved = tmp.path().join("moved");
+        fs::rename(&root, &moved).unwrap();
+        let out = std::process::Command::new(moved.join("bin/tool")).arg("there").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "moved there");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_env_wrapper_follows_a_moved_tool_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("tool");
+        let stub = root.join("gems/bin/tool");
+        fs::create_dir_all(stub.parent().unwrap()).unwrap();
+        fs::write(&stub, "#!/bin/sh\ntest -d \"$GEM_HOME\" && echo ok\n").unwrap();
+        make_executable(&stub).unwrap();
+        let gems = root.join("gems");
+        env_wrapper(&root.join("bin"), "tool", &stub, &[("GEM_HOME", gems.as_path())]).unwrap();
+
+        let moved = tmp.path().join("moved");
+        fs::rename(&root, &moved).unwrap();
+        let out = std::process::Command::new(moved.join("bin/tool")).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
     }
 }

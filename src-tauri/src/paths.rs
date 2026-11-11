@@ -845,6 +845,71 @@ pub fn bootstrap_legacy_migrate() {
     tracing::info!("config migration: {} entries moved into the default base ({} failed)", result.moved, result.failed);
 }
 
+/// The roots an installed tool may name: a custom base itself (tools live at
+/// its top level), or every platform root in the legacy layout.
+fn tool_homes(layout: &Layout, defaults: &PlatformDirs) -> Vec<PathBuf> {
+    match layout {
+        Layout::Custom(base) => vec![base.clone()],
+        Layout::Default => all_roots(layout, defaults),
+    }
+}
+
+/// Rewrites installed-tool launchers (`tools/<tool>/bin/<command>`) that name
+/// a directory the tools no longer live in. A base switch moves the tools, but
+/// the launchers the installer wrote embed the old absolute paths (the binary
+/// and environment roots); without this they start a deleted file.
+pub fn repair_moved_tool_launchers(from: &Layout, to: &Layout, defaults: &PlatformDirs) {
+    let Layout::Custom(base) = to else { return };
+    let old: Vec<PathBuf> = tool_homes(from, defaults).into_iter().filter(|root| root != base).collect();
+    if old.is_empty() {
+        return;
+    }
+    let mut repaired = 0usize;
+    let Ok(tools) = std::fs::read_dir(base.join("tools")) else { return };
+    for tool in tools.flatten() {
+        let Ok(files) = std::fs::read_dir(tool.path().join("bin")) else { continue };
+        for file in files.flatten() {
+            let path = file.path();
+            if !path.is_file() {
+                continue;
+            }
+            // Launchers are small text files; a real binary in a bin dir (a
+            // bundled JDK's `java`) must never be rewritten.
+            let Ok(bytes) = std::fs::read(&path) else { continue };
+            if bytes.len() > 64 * 1024 || bytes.contains(&0) {
+                continue;
+            }
+            let Ok(text) = String::from_utf8(bytes) else { continue };
+            let mut fixed = text.clone();
+            for root in &old {
+                // Nested roots (a base inside another base) are not a move:
+                // replacing the shorter prefix would corrupt the longer path.
+                if root.starts_with(base) || base.starts_with(root) {
+                    continue;
+                }
+                let root = root.to_string_lossy();
+                if !root.is_empty() {
+                    fixed = fixed.replace(root.as_ref(), &base.to_string_lossy());
+                }
+            }
+            if fixed != text && std::fs::write(&path, fixed).is_ok() {
+                repaired += 1;
+            }
+        }
+    }
+    if repaired > 0 {
+        tracing::info!("config migration: repaired {repaired} tool launchers");
+    }
+}
+
+/// Startup repair for an install that moved before the launcher fix shipped:
+/// the platform layout is the origin those launchers name. Idempotent; a fresh
+/// install matches nothing.
+pub fn repair_tool_launchers() {
+    let resolved = current();
+    repair_moved_tool_launchers(&Layout::Default, &resolved.layout, &resolved.defaults);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1269,6 +1334,56 @@ mod tests {
         assert_eq!(second, Migration { moved: 1, failed: 0 });
         assert!(base.join("system/lsp/keep").is_file());
         assert!(!marker.exists(), "a clean migration clears the marker");
+    }
+
+    #[test]
+    fn a_moved_tools_tree_has_its_launchers_repaired() {
+        let tmp = TempDir::new().unwrap();
+        let defaults = defaults_of(Path::new("/platform-config"), Path::new("/platform-data"));
+        let base = tmp.path().join("base");
+        folder(&base, "tools/lemminx/bin");
+        file(&base, "tools/lemminx/lemminx-osx-x86_64");
+        let shim = base.join("tools/lemminx/bin/lemminx");
+        fs::write(&shim, "#!/bin/sh\nexec '/platform-data/tools/lemminx/lemminx-osx-x86_64' \"$@\"\n").unwrap();
+
+        repair_moved_tool_launchers(&Layout::Default, &Layout::Custom(base.clone()), &defaults);
+
+        let text = fs::read_to_string(&shim).unwrap();
+        assert!(text.contains(&format!("{}/tools/lemminx/lemminx-osx-x86_64", base.display())));
+        assert!(!text.contains("/platform-data"));
+        // A second start is a no-op.
+        repair_moved_tool_launchers(&Layout::Default, &Layout::Custom(base), &defaults);
+    }
+
+    #[test]
+    fn a_base_switch_repairs_launchers_from_the_old_base() {
+        let tmp = TempDir::new().unwrap();
+        let defaults = defaults_of(Path::new("/c"), Path::new("/d"));
+        let from = tmp.path().join("old-base");
+        let to = tmp.path().join("new-base");
+        folder(&to, "tools/x/bin");
+        file(&to, "tools/x/x-bin");
+        let shim = to.join("tools/x/bin/x");
+        fs::write(&shim, format!("#!/bin/sh\nexec '{}/tools/x/x-bin' \"$@\"\n", from.display())).unwrap();
+
+        repair_moved_tool_launchers(&Layout::Custom(from), &Layout::Custom(to.clone()), &defaults);
+
+        assert!(fs::read_to_string(&shim).unwrap().contains(&format!("{}/tools/x/x-bin", to.display())));
+    }
+
+    #[test]
+    fn a_binary_in_a_tool_bin_is_never_rewritten() {
+        let tmp = TempDir::new().unwrap();
+        let defaults = defaults_of(Path::new("/c"), Path::new("/d"));
+        let base = tmp.path().join("base");
+        folder(&base, "tools/jdk/bin");
+        let binary = b"\x7fELF\x00/platform-data/tools/jdk/bin/java\x00";
+        let path = base.join("tools/jdk/bin/java");
+        fs::write(&path, binary).unwrap();
+
+        repair_moved_tool_launchers(&Layout::Default, &Layout::Custom(base), &defaults);
+
+        assert_eq!(fs::read(&path).unwrap(), binary);
     }
 
     #[test]

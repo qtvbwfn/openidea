@@ -212,6 +212,9 @@ pub fn run() {
         // before anything reads settings. Plugins (single-instance first) have
         // already run, so a second launch never migrates.
         paths::bootstrap_legacy_migrate();
+        // Installs that moved before the launcher fix keep absolute paths in
+        // their `bin/` shims; rewrite them to the base before servers start.
+        paths::repair_tool_launchers();
         builder.mount_events(app);
         let state = AppState::new(app.handle().clone())?;
         let windows = app.state::<WindowsState>();
