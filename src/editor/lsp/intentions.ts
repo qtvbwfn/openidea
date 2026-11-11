@@ -457,7 +457,7 @@ export async function showIntentions(view: EditorView) {
     openPopup({
       kind: "list",
       anchor: caretAnchor(view, view.state.selection.main.head),
-      title: "Intentions",
+      title: tx("Intentions"),
       items,
       preview: (item, signal) => {
         const action = previews.get(item.id);
