@@ -25,14 +25,7 @@ import { askCreateXml } from "./dialogs";
 import { appendStatementEdit, importEdit, mapperXmlContent, paramAnnotationEdits, statementXml } from "./generate";
 import { inType, methodAt, parseMapperInterface, type MapperInterface, type MapperMethod } from "./javaParse";
 import { parseMapperXml } from "./xmlParse";
-import {
-  configuredXmlDirs,
-  ensureMapperIndex,
-  ensureMapperScanPackages,
-  mapperScanCovers,
-  patchMapperIndex,
-  type XmlEntry,
-} from "./xmlIndex";
+import { configuredXmlDirs, ensureMapperIndex, patchMapperIndex, type XmlEntry } from "./xmlIndex";
 import { refreshMybatisGutters } from "./gutter";
 
 // ---------------------------------------------------------------------------
@@ -90,15 +83,6 @@ async function xmlTargets(
     if (parseMapperXml(text).namespace === iface.fqn) return { existing: [entryFrom(c, text)], createPath: null };
   }
   return { existing: [], createPath: null };
-}
-
-/** Mapper-ness: annotation signals, an XML namespace, or a @MapperScan package. */
-async function mapperKnown(iface: MapperInterface): Promise<boolean> {
-  if (iface.hasMapperAnnotation || iface.methods.some((m) => m.sqlAnnotation)) return true;
-  const root = useProject.getState().project?.root ?? null;
-  const index = await ensureMapperIndex(root);
-  if (index.xmls.has(iface.fqn)) return true;
-  return mapperScanCovers(await ensureMapperScanPackages(root), iface.pkg);
 }
 
 // ---------------------------------------------------------------------------
@@ -173,10 +157,6 @@ async function generateStatementOrCreate(
   iface: MapperInterface,
   scope: MapperMethod | null,
 ) {
-  if (!(await mapperKnown(iface))) {
-    showHint(view, tx("Not a MyBatis mapper"));
-    return;
-  }
   const { existing } = await xmlTargets(iface, ctx.path);
   if (existing.length) {
     const have = new Set(existing.flatMap((e) => [...e.statements.keys()]));
@@ -252,10 +232,6 @@ async function jumpToStatements(view: EditorView, iface: MapperInterface, m: Map
 
 /** `Create Mapper XML…`: open the mapper's XML when it exists, create it when it doesn't. */
 async function openOrCreateXml(view: EditorView, ctx: EditorDocContext, iface: MapperInterface) {
-  if (!(await mapperKnown(iface))) {
-    showHint(view, tx("Not a MyBatis mapper"));
-    return;
-  }
   const { existing } = await xmlTargets(iface, ctx.path);
   if (existing.length) {
     await editorService().openFile(existing[0]!.path, { focus: true });
@@ -271,20 +247,12 @@ async function generateOrJumpToStatement(
   iface: MapperInterface,
   m: MapperMethod,
 ) {
-  if (!(await mapperKnown(iface))) {
-    showHint(view, tx("Not a MyBatis mapper"));
-    return;
-  }
   if (await jumpToStatements(view, iface, m)) return;
   await generateStatementOrCreate(view, ctx, iface, m);
 }
 
 /** `Generate XML Statement` off a method: fill what's missing, or open the XML when all are there. */
 async function generateOrOpenXml(view: EditorView, ctx: EditorDocContext, iface: MapperInterface) {
-  if (!(await mapperKnown(iface))) {
-    showHint(view, tx("Not a MyBatis mapper"));
-    return;
-  }
   const root = useProject.getState().project?.root ?? null;
   const index = await ensureMapperIndex(root);
   const entry = (index.xmls.get(iface.fqn) ?? [])[0];

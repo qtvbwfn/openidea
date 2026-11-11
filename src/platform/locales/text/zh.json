@@ -7330,7 +7330,6 @@
   "New value of {name}": "{name} 的新值",
   "No active debug session": "没有活动调试会话",
   "No target location for the mapper XML": "没有 mapper XML 的目标位置",
-  "Not a MyBatis mapper": "不是 MyBatis mapper",
   "Not suspended": "未暂停",
   "Not verified": "未验证",
   "Old paths in settings and run configurations are rewritten, and the previous directories are moved to the trash. Don't migrate keeps them in place; the prompt asks again on the next start.": "设置和运行配置中的旧路径将被重写，旧目录会移入废纸篓。选择暂不迁移则保持原位；下次启动会再次询问。",
