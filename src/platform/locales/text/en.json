@@ -981,5 +981,6 @@
   "Data directory: {dataDir}": "Data directory: {dataDir}",
   "Reset to default": "Reset to default",
   "Settings and data live under this directory.": "Settings and data live under this directory.",
-  "OPENIDEA_HOME is set and takes precedence over this setting.": "OPENIDEA_HOME is set and takes precedence over this setting."
+  "OPENIDEA_HOME is set and takes precedence over this setting.": "OPENIDEA_HOME is set and takes precedence over this setting.",
+  "All parameters already have @Param": "All parameters already have @Param"
 }

@@ -7315,7 +7315,6 @@
   "Generate XML Statement": "生成 XML Statement",
   "Get from Version Control": "从版本控制获取",
   "JRE": "Java 运行环境",
-  "Jump to MyBatis Statement": "跳转到 MyBatis Statement",
   "Jump to MyBatis statement": "跳转到 MyBatis 语句",
   "Jump to SQL annotation": "跳转到 SQL 注解",
   "Jump to mapper interface": "跳转到 mapper 接口",
@@ -7329,7 +7328,6 @@
   "Moved {moved} entries; {failed} could not be moved and stay in the old directories.": "已移动 {moved} 项；{failed} 项无法移动，仍保留在旧目录中。",
   "MyBatis mapper statements": "MyBatis mapper 语句",
   "New value of {name}": "{name} 的新值",
-  "No MyBatis statement for this method": "该方法没有 MyBatis 语句",
   "No active debug session": "没有活动调试会话",
   "No target location for the mapper XML": "没有 mapper XML 的目标位置",
   "Not a MyBatis mapper": "不是 MyBatis mapper",
@@ -7351,5 +7349,6 @@
   "Data directory: {dataDir}": "数据目录：{dataDir}",
   "Reset to default": "恢复默认",
   "Settings and data live under this directory.": "设置和数据存放在此目录下。",
-  "OPENIDEA_HOME is set and takes precedence over this setting.": "已设置 OPENIDEA_HOME，它优先于此项设置。"
+  "OPENIDEA_HOME is set and takes precedence over this setting.": "已设置 OPENIDEA_HOME，它优先于此项设置。",
+  "All parameters already have @Param": "所有参数已有 @Param 注解"
 }

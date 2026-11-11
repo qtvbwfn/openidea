@@ -1,10 +1,12 @@
 /**
- * ⌥↵ intentions for Java mapper interfaces, offered synchronously from the
- * document text (plus the already-resolved project index snapshot): @Param
- * generation (method / whole interface), creating the mapper.xml, generating
- * one XML statement, and jumping to it. The runs re-check the document
- * version before dispatching edits; creating a file asks for confirmation
- * first (`askCreateXml`).
+ * ⌥↵ intentions for Java mapper interfaces: three items listed for every
+ * mapper interface — creating the mapper.xml, generating one XML statement,
+ * and @Param generation. Each re-checks on click what the mapper already has
+ * (jump to the XML or its statement) and what it lacks (create); the menu no
+ * longer depends on the index snapshot being resolved. Jumping is also the
+ * gutter arrows' / ⌘B's job, so there is no separate jump item. The runs
+ * re-check the document version before dispatching edits; creating a file
+ * asks for confirmation first (`askCreateXml`).
  */
 import { EditorSelection } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
@@ -27,11 +29,8 @@ import {
   configuredXmlDirs,
   ensureMapperIndex,
   ensureMapperScanPackages,
-  mapperIndexSnapshot,
   mapperScanCovers,
-  mapperScanPackagesSnapshot,
   patchMapperIndex,
-  resetMapperIndex,
   type XmlEntry,
 } from "./xmlIndex";
 import { refreshMybatisGutters } from "./gutter";
@@ -158,7 +157,11 @@ async function createMapperXml(path: string, iface: MapperInterface): Promise<vo
   const content = mapperXmlContent(iface);
   await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(content))));
   notifyFileOperation({ kind: "created", paths: [path] });
-  resetMapperIndex();
+  // Merge the new file into the resolved index instead of dropping the cache:
+  // a reset leaves mapperIndexSnapshot null until the next rebuild, which
+  // blanks every mapper intention (jump / generate / create) right after the
+  // very flow that was expected to enable them.
+  patchMapperIndex(path, content);
   refreshMybatisGutters();
   await editorService().openFile(path, { focus: true });
 }
@@ -174,7 +177,7 @@ async function generateStatementOrCreate(
     showHint(view, tx("Not a MyBatis mapper"));
     return;
   }
-  const { existing, createPath } = await xmlTargets(iface, ctx.path);
+  const { existing } = await xmlTargets(iface, ctx.path);
   if (existing.length) {
     const have = new Set(existing.flatMap((e) => [...e.statements.keys()]));
     if (scope && have.has(scope.name)) {
@@ -193,6 +196,17 @@ async function generateStatementOrCreate(
     if (await appendStatement(entry.path, stmts)) paramsForMissing(view, iface, scope, missing);
     return;
   }
+  await createXmlFlow(view, ctx, iface, scope);
+}
+
+/** The create half of the statement flow: confirm, write, then fill the fresh @Params. */
+async function createXmlFlow(
+  view: EditorView,
+  ctx: EditorDocContext,
+  iface: MapperInterface,
+  scope: MapperMethod | null,
+) {
+  const { createPath } = await xmlTargets(iface, ctx.path);
   if (!createPath) {
     showHint(view, tx("No target location for the mapper XML"), { tone: "error" });
     return;
@@ -207,32 +221,93 @@ async function generateStatementOrCreate(
   );
 }
 
-async function jumpToStatement(view: EditorView, iface: MapperInterface, m: MapperMethod) {
+/** Where the method's XML statements live (the resolved index; empty when none). */
+async function statementTargets(iface: MapperInterface, m: MapperMethod): Promise<Location[]> {
   const root = useProject.getState().project?.root ?? null;
   const index = await ensureMapperIndex(root);
-  const entries = index.xmls.get(iface.fqn) ?? [];
   const targets: Location[] = [];
-  for (const e of entries) {
+  for (const e of index.xmls.get(iface.fqn) ?? [])
     for (const s of e.statements.get(m.name) ?? [])
       targets.push({
         path: e.path,
         range: { start: { line: s.line, col: s.col }, end: { line: s.line, col: s.col + 1 } },
       });
-  }
-  if (!targets.length) {
-    showHint(view, tx("No MyBatis statement for this method"));
+  return targets;
+}
+
+/** The method's statements exist: jump to the one, or choose among them. */
+async function jumpToStatements(view: EditorView, iface: MapperInterface, m: MapperMethod): Promise<boolean> {
+  const targets = await statementTargets(iface, m);
+  if (!targets.length) return false;
+  if (targets.length === 1) await navigateTo(targets[0]!);
+  else
+    openPopup({
+      kind: "list",
+      anchor: caretAnchor(view, view.state.selection.main.head),
+      title: tx("Choose MyBatis Statement"),
+      items: await locationItems(targets),
+    });
+  return true;
+}
+
+/** `Create Mapper XML…`: open the mapper's XML when it exists, create it when it doesn't. */
+async function openOrCreateXml(view: EditorView, ctx: EditorDocContext, iface: MapperInterface) {
+  if (!(await mapperKnown(iface))) {
+    showHint(view, tx("Not a MyBatis mapper"));
     return;
   }
-  if (targets.length === 1) {
-    await navigateTo(targets[0]!);
+  const { existing } = await xmlTargets(iface, ctx.path);
+  if (existing.length) {
+    await editorService().openFile(existing[0]!.path, { focus: true });
     return;
   }
-  openPopup({
-    kind: "list",
-    anchor: caretAnchor(view, view.state.selection.main.head),
-    title: tx("Choose MyBatis Statement"),
-    items: await locationItems(targets),
-  });
+  await createXmlFlow(view, ctx, iface, null);
+}
+
+/** `Generate XML Statement` with the caret on a method: jump when it exists, generate when it doesn't. */
+async function generateOrJumpToStatement(
+  view: EditorView,
+  ctx: EditorDocContext,
+  iface: MapperInterface,
+  m: MapperMethod,
+) {
+  if (!(await mapperKnown(iface))) {
+    showHint(view, tx("Not a MyBatis mapper"));
+    return;
+  }
+  if (await jumpToStatements(view, iface, m)) return;
+  await generateStatementOrCreate(view, ctx, iface, m);
+}
+
+/** `Generate XML Statement` off a method: fill what's missing, or open the XML when all are there. */
+async function generateOrOpenXml(view: EditorView, ctx: EditorDocContext, iface: MapperInterface) {
+  if (!(await mapperKnown(iface))) {
+    showHint(view, tx("Not a MyBatis mapper"));
+    return;
+  }
+  const root = useProject.getState().project?.root ?? null;
+  const index = await ensureMapperIndex(root);
+  const entry = (index.xmls.get(iface.fqn) ?? [])[0];
+  const have = entry ? new Set(entry.statements.keys()) : new Set<string>();
+  const missing = iface.methods.filter((m) => m.kind && !m.defaultMethod && !have.has(m.name));
+  if (!entry || missing.length) {
+    await generateStatementOrCreate(view, ctx, iface, null);
+    return;
+  }
+  await editorService().openFile(entry.path, { focus: true });
+}
+
+/** `Generate @Param Annotations`: fill what's missing; say so when everything is annotated. */
+function runParamsOrHint(view: EditorView, iface: MapperInterface, m: MapperMethod | null) {
+  if (m && needsParams(m)) {
+    runParams(view, iface, m);
+    return;
+  }
+  if (iface.methods.some(needsParams)) {
+    runParams(view, iface, null);
+    return;
+  }
+  showHint(view, tx("All parameters already have @Param"));
 }
 
 // ---------------------------------------------------------------------------
@@ -245,51 +320,29 @@ export function mybatisIntentions(view: EditorView): ContributedIntention[] {
   if (!iface) return [];
   const caret = view.state.selection.main.head;
   const m = methodAt(iface, caret);
-  const inTypeAt = inType(iface, caret);
+  if (!inType(iface, caret)) return [];
 
-  // Mapper signals: annotations (sync), or the already-resolved index /
-  // @MapperScan snapshot. Before the first index pass resolves, only the
-  // annotation-signal mappers get intentions (the gutter pass loads the index).
-  const signals = iface.hasMapperAnnotation || iface.methods.some((x) => x.sqlAnnotation);
-  const root = useProject.getState().project?.root ?? null;
-  const index = mapperIndexSnapshot(root);
-  const scanPackages = mapperScanPackagesSnapshot(root);
-  const known =
-    signals || index?.xmls.has(iface.fqn) || (scanPackages !== null && mapperScanCovers(scanPackages, iface.pkg));
-
-  const out: ContributedIntention[] = [];
-
-  if (m && needsParams(m))
-    out.push({
-      id: "mybatis.params.method",
-      label: tx("Generate @Param Annotations"),
-      run: () => runParams(view, iface, m),
-    });
-  else if (inTypeAt && iface.methods.some(needsParams))
-    out.push({
-      id: "mybatis.params.all",
-      label: tx("Generate @Param Annotations"),
-      run: () => runParams(view, iface, null),
-    });
-
-  if (known && inTypeAt)
-    out.push({
+  // The three stay listed for every mapper interface; each one re-checks on
+  // click what the mapper already has (jump) and what it lacks (create).
+  const out: ContributedIntention[] = [
+    {
       id: "mybatis.createXml",
       label: tx("Create Mapper XML…"),
-      run: () => void generateStatementOrCreate(view, ctx, iface, null),
-    });
-
-  if (known && m && m.kind && !m.defaultMethod) {
-    out.push({
-      id: "mybatis.jump",
-      label: tx("Jump to MyBatis Statement"),
-      run: () => void jumpToStatement(view, iface, m),
-    });
-    out.push({
+      run: () => void openOrCreateXml(view, ctx, iface),
+    },
+    {
       id: "mybatis.statement",
       label: tx("Generate XML Statement"),
-      run: () => void generateStatementOrCreate(view, ctx, iface, m),
-    });
-  }
+      run: () =>
+        void (m && m.kind && !m.defaultMethod
+          ? generateOrJumpToStatement(view, ctx, iface, m)
+          : generateOrOpenXml(view, ctx, iface)),
+    },
+    {
+      id: "mybatis.params",
+      label: tx("Generate @Param Annotations"),
+      run: () => runParamsOrHint(view, iface, m),
+    },
+  ];
   return out;
 }
