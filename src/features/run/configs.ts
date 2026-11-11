@@ -22,6 +22,7 @@ const KIND_LABELS: Record<string, string> = {
   program: "Program",
   compound: "Compound",
   application: "Application",
+  "jar-application": "JAR Application",
   "spring-boot": "Spring Boot",
   node: "Node.js",
   "java-file": "Java Single File",
@@ -56,6 +57,7 @@ export function kindLabel(kind: string): string {
 export const KIND_CATEGORIES: Record<string, string> = {
   "spring-boot": "Java",
   application: "Java",
+  "jar-application": "Java",
   native: "Java",
   "java-file": "Java",
   kotlin: "Java",
@@ -115,6 +117,7 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "compound":
       return "gutter-run-all";
     case "program":
+    case "jar-application":
       return "file-binary";
     case "spring-boot":
       return "spring-boot";

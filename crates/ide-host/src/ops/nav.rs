@@ -45,6 +45,11 @@ pub fn find_files(host: &Host, window: &str, query: String, limit: u32) -> IdeRe
     Ok(host.project(window)?.index.find_files(&query, limit as usize))
 }
 
+pub async fn find_files_named(host: &Host, window: &str, name: String) -> IdeResult<Vec<IpcPath>> {
+    let project = host.project(window)?;
+    blocking(move || Ok(project.index.files_named(&name).into_iter().map(Into::into).collect())).await
+}
+
 pub fn find_dirs(host: &Host, window: &str, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
     Ok(host.project(window)?.index.find_dirs(&query, limit as usize))
 }
@@ -111,9 +116,154 @@ pub async fn web_goto(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeRes
     .await
 }
 
-/// Where the project index resolves a symbol to without a language server
-/// (docs/vue-ts-semantic-index.md): a local's definition, the import chain's
-/// declaration, a re-export's origin, or a component's file.
+/// The file a Python import path names: `a.b.c` is `a/b/c.py(i)` or `a/b/c/__init__.py(i)`
+/// in the project or one of its content roots (an attached dependency project included);
+/// `.x` names it relative to `from`'s directory. Neither the language server (it analyses a
+/// single root) nor the definition index resolves a package segment, so ⌘B on the `a.b` of
+/// `from a.b import x` needs this.
+pub async fn nav_resolve_module(host: &Host, window: &str, name: String, from: IpcPath) -> IdeResult<Option<IpcPath>> {
+    let project = host.project(window)?;
+    blocking(move || {
+        let dots = name.len() - name.trim_start_matches('.').len();
+        let parts: Vec<&str> = name.split('.').filter(|s| !s.is_empty()).collect();
+        if parts.is_empty() {
+            return Ok(None);
+        }
+        let rel = parts.iter().collect::<PathBuf>();
+        let bases: Vec<PathBuf> = if dots > 0 {
+            let dir = PathBuf::from(from);
+            let dir = dir.parent().map(Path::to_path_buf).unwrap_or(dir);
+            let base = (0..dots.saturating_sub(1)).fold(dir, |p, _| p.parent().map(Path::to_path_buf).unwrap_or(p));
+            vec![base]
+        } else {
+            crate::project::navigation_roots(&project, &from)
+        };
+        for base in bases {
+            let dir = base.join(&rel);
+            for candidate in
+                [dir.with_extension("py"), dir.with_extension("pyi"), dir.join("__init__.py"), dir.join("__init__.pyi")]
+            {
+                if candidate.is_file() {
+                    return Ok(Some(IpcPath::from(candidate)));
+                }
+            }
+        }
+        Ok(None)
+    })
+    .await
+}
+
+/// Index definitions named `name` in the other roots `from` may navigate into (its configured
+/// dependencies and extra content roots — see `navigation_roots`): the cross-root answer when
+/// the language server cannot resolve an import into an attached dependency project. `from`'s
+/// own root is left out: the server sees it, so a name it could not resolve there is not
+/// answered by every declaration that happens to share it (any `save` for `repo.save()`).
+pub async fn nav_index_definitions(
+    host: &Host,
+    window: &str,
+    name: String,
+    from: IpcPath,
+) -> IdeResult<Vec<SymbolMatch>> {
+    let project = host.project(window)?;
+    blocking(move || {
+        let roots = crate::project::navigation_roots(&project, &from);
+        let Some((_own, roots)) = roots.split_first() else { return Ok(Vec::new()) };
+        if roots.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Filter inside the index: a cap applied before the root filter can fill with
+        // own-root matches and evict the dependency roots entirely.
+        Ok(project.index.symbols_named_within(&name, None, roots, 500))
+    })
+    .await
+}
+
+/// The existing file or directory a path written in `from` names (`href`, `url()`, a string literal).
+pub async fn fs_resolve_reference(
+    host: &Host,
+    window: &str,
+    from: IpcPath,
+    value: String,
+) -> IdeResult<Option<IpcPath>> {
+    let project = host.project(window).ok();
+    blocking(move || {
+        let (root, resources) = project.as_deref().map(reference_roots).unzip();
+        let resources = resources.unwrap_or_default();
+        Ok(file_refs::resolve(&value, &from, root.as_deref(), &resources).map(Into::into))
+    })
+    .await
+}
+
+/// Files and folders that continue `prefix`, a path being typed in `from`.
+pub async fn path_completions(
+    host: &Host,
+    window: &str,
+    from: IpcPath,
+    prefix: String,
+) -> IdeResult<Vec<PathCompletion>> {
+    let project = host.project(window).ok();
+    blocking(move || {
+        let (root, resources) = project.as_deref().map(reference_roots).unzip();
+        let resources = resources.unwrap_or_default();
+        Ok(file_refs::complete(&prefix, &from, root.as_deref(), &resources))
+    })
+    .await
+}
+
+/// Paths in an HTML document or stylesheet that name no existing file.
+pub async fn web_unresolved_references(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<FileReference>> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    blocking(move || {
+        let snap = project.documents.snapshot(doc)?;
+        if snap.large {
+            return Ok(Vec::new());
+        }
+        let (root, resources) = reference_roots(&project);
+        Ok(syntax
+            .web_file_references(&snap.language, &snap.text)
+            .into_iter()
+            .filter(|r| {
+                file_refs::is_file_reference(&r.value)
+                    && !file_refs::path_part(&r.value).is_empty()
+                    && file_refs::resolve(&r.value, &snap.path, Some(&root), &resources).is_none()
+            })
+            .collect())
+    })
+    .await
+}
+
+/// Commands of this module the remote server answers.
+pub(crate) fn register(d: &mut Dispatcher) {
+    d.add("index_status", |c| async move { index_status(&c.host, &c.window) });
+    d.add("index_file_extensions", |c| async move { index_file_extensions(&c.host, &c.window) });
+    d.add("find_files", |c| async move { find_files(&c.host, &c.window, c.arg("query")?, c.arg("limit")?) });
+    d.add("find_files_named", |c| async move { find_files_named(&c.host, &c.window, c.arg("name")?).await });
+    d.add("find_dirs", |c| async move { find_dirs(&c.host, &c.window, c.arg("query")?, c.arg("limit")?) });
+    d.add("find_symbols", |c| async move {
+        find_symbols(&c.host, &c.window, c.arg("query")?, c.arg("filter")?, c.arg("limit")?)
+    });
+    d.add("mark_recent", |c| async move { mark_recent(&c.host, &c.window, c.arg("path")?) });
+    d.add("remove_recent", |c| async move { remove_recent(&c.host, &c.window, c.arg("path")?) });
+    d.add("recent_files", |c| async move { recent_files(&c.host, &c.window) });
+    d.add("web_goto", |c| async move { web_goto(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await });
+    d.add("nav_resolve_module", |c| async move {
+        nav_resolve_module(&c.host, &c.window, c.arg("name")?, c.arg("from")?).await
+    });
+    d.add("nav_index_definitions", |c| async move {
+        nav_index_definitions(&c.host, &c.window, c.arg("name")?, c.arg("from")?).await
+    });
+    d.add("fs_resolve_reference", |c| async move {
+        fs_resolve_reference(&c.host, &c.window, c.arg("from")?, c.arg("value")?).await
+    });
+    d.add("path_completions", |c| async move {
+        path_completions(&c.host, &c.window, c.arg("from")?, c.arg("prefix")?).await
+    });
+    d.add("web_unresolved_references", |c| async move {
+        web_unresolved_references(&c.host, &c.window, c.arg("doc")?).await
+    });
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexGoto {
@@ -130,40 +280,6 @@ pub enum IndexNote {
     Candidate,
 }
 
-/// Where the project index sees `name` (identifiers, component tags):
-/// the find-usages fallback's answer, an inverted-index lookup.
-pub async fn index_usages(host: &Host, window: &str, name: String, css: bool) -> IdeResult<Vec<Location>> {
-    let project = host.project(window)?;
-    let index = project.index.clone();
-    blocking(move || Ok(index.usages_of(&name, css))).await
-}
-
-/// The languages whose `<script>` regions carry module facts.
-fn is_web_language(lang: &str) -> bool {
-    matches!(lang, "vue" | "svelte" | "html" | "htm" | "jsp")
-}
-
-/// Whether `path` is a single-file component module.
-fn is_component_file(path: &Path) -> bool {
-    matches!(path.extension().and_then(|e| e.to_str()), Some("vue" | "svelte"))
-}
-
-/// `my-widget` / `MyWidget` → `MyWidget`: how component tags name files.
-fn pascal_case(word: &str) -> String {
-    word.split(['-', '_'])
-        .filter(|p| !p.is_empty())
-        .map(|p| {
-            let mut c = p.chars();
-            c.next().map_or(String::new(), |f| f.to_uppercase().collect::<String>() + c.as_str())
-        })
-        .collect()
-}
-
-/// Go-to-definition from the project index: the local of a `<script>` region,
-/// the import chain's declaration (following re-exports), or a component's
-/// file. `word` is the identifier at `pos` (the caller's word at the caret).
-/// `None` when the index cannot answer — the caller falls back to symbol
-/// name matching.
 pub async fn index_goto(host: &Host, window: &str, doc: DocId, pos: Pos, word: String) -> IdeResult<Option<IndexGoto>> {
     let project = host.project(window)?;
     let syntax = host.syntax();
@@ -316,85 +432,29 @@ fn file_location(index: &ProjectIndex, path: &Path) -> Location {
     Location { path: path.into(), range, uri: None }
 }
 
-/// The existing file or directory a path written in `from` names (`href`, `url()`, a string literal).
-pub async fn fs_resolve_reference(
-    host: &Host,
-    window: &str,
-    from: IpcPath,
-    value: String,
-) -> IdeResult<Option<IpcPath>> {
-    let project = host.project(window).ok();
-    blocking(move || {
-        let (root, resources) = project.as_deref().map(reference_roots).unzip();
-        let resources = resources.unwrap_or_default();
-        Ok(file_refs::resolve(&value, &from, root.as_deref(), &resources).map(Into::into))
-    })
-    .await
-}
-
-/// Files and folders that continue `prefix`, a path being typed in `from`.
-pub async fn path_completions(
-    host: &Host,
-    window: &str,
-    from: IpcPath,
-    prefix: String,
-) -> IdeResult<Vec<PathCompletion>> {
-    let project = host.project(window).ok();
-    blocking(move || {
-        let (root, resources) = project.as_deref().map(reference_roots).unzip();
-        let resources = resources.unwrap_or_default();
-        Ok(file_refs::complete(&prefix, &from, root.as_deref(), &resources))
-    })
-    .await
-}
-
-/// Paths in an HTML document or stylesheet that name no existing file.
-pub async fn web_unresolved_references(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<FileReference>> {
+pub async fn index_usages(host: &Host, window: &str, name: String, css: bool) -> IdeResult<Vec<Location>> {
     let project = host.project(window)?;
-    let syntax = host.syntax();
-    blocking(move || {
-        let snap = project.documents.snapshot(doc)?;
-        if snap.large {
-            return Ok(Vec::new());
-        }
-        let (root, resources) = reference_roots(&project);
-        Ok(syntax
-            .web_file_references(&snap.language, &snap.text)
-            .into_iter()
-            .filter(|r| {
-                file_refs::is_file_reference(&r.value)
-                    && !file_refs::path_part(&r.value).is_empty()
-                    && file_refs::resolve(&r.value, &snap.path, Some(&root), &resources).is_none()
-            })
-            .collect())
-    })
-    .await
+    let index = project.index.clone();
+    blocking(move || Ok(index.usages_of(&name, css))).await
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("index_status", |c| async move { index_status(&c.host, &c.window) });
-    d.add("index_file_extensions", |c| async move { index_file_extensions(&c.host, &c.window) });
-    d.add("find_files", |c| async move { find_files(&c.host, &c.window, c.arg("query")?, c.arg("limit")?) });
-    d.add("find_dirs", |c| async move { find_dirs(&c.host, &c.window, c.arg("query")?, c.arg("limit")?) });
-    d.add("find_symbols", |c| async move {
-        find_symbols(&c.host, &c.window, c.arg("query")?, c.arg("filter")?, c.arg("limit")?)
-    });
-    d.add("mark_recent", |c| async move { mark_recent(&c.host, &c.window, c.arg("path")?) });
-    d.add("remove_recent", |c| async move { remove_recent(&c.host, &c.window, c.arg("path")?) });
-    d.add("recent_files", |c| async move { recent_files(&c.host, &c.window) });
-    d.add("web_goto", |c| async move { web_goto(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await });
-    d.add("index_goto", |c| async move {
-        index_goto(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("word")?).await
-    });
-    d.add("index_usages", |c| async move { index_usages(&c.host, &c.window, c.arg("name")?, c.arg("css")?).await });
-    d.add("fs_resolve_reference", |c| async move {
-        fs_resolve_reference(&c.host, &c.window, c.arg("from")?, c.arg("value")?).await
-    });
-    d.add("path_completions", |c| async move {
-        path_completions(&c.host, &c.window, c.arg("from")?, c.arg("prefix")?).await
-    });
-    d.add("web_unresolved_references", |c| async move {
-        web_unresolved_references(&c.host, &c.window, c.arg("doc")?).await
-    });
+/// The languages whose `<script>` regions carry module facts.
+fn is_web_language(lang: &str) -> bool {
+    matches!(lang, "vue" | "svelte" | "html" | "htm" | "jsp")
+}
+
+/// Whether `path` is a single-file component module.
+fn is_component_file(path: &Path) -> bool {
+    matches!(path.extension().and_then(|e| e.to_str()), Some("vue" | "svelte"))
+}
+
+/// `my-widget` / `MyWidget` → `MyWidget`: how component tags name files.
+fn pascal_case(word: &str) -> String {
+    word.split(['-', '_'])
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let mut c = p.chars();
+            c.next().map_or(String::new(), |f| f.to_uppercase().collect::<String>() + c.as_str())
+        })
+        .collect()
 }

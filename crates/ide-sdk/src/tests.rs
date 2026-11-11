@@ -1,6 +1,6 @@
 use crate::apply::{
     apply_to_run_configs, configure_server, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
-    ruff_configuration, terminal_activation, tsdk, without_derived,
+    ruff_configuration, terminal_activation, tool_install_environment, tsdk, without_derived,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -204,6 +204,53 @@ fn jdtls_honors_the_configured_maven_local_repository() {
     let mut cfg = server("jdtls");
     configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
     assert!(cfg.args.iter().all(|a| !a.contains("maven.repo.local")));
+}
+
+#[test]
+fn jdtls_m2e_gets_effective_settings_with_local_repository() {
+    fn user_settings(cfg: &LanguageServerConfig) -> Option<std::path::PathBuf> {
+        let opts = serde_json::to_value(cfg.initialization_options.clone()?).ok()?;
+        opts.pointer("/settings/java/configuration/maven/userSettings")?.as_str().map(std::path::PathBuf::from)
+    }
+
+    // Configured repository, no user settings: a derived file is passed (#1739).
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("m2-repo");
+    let mut s = Settings::default();
+    s.languages.java.maven.local_repository = repo.to_string_lossy().into_owned();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    let derived = tmp.path().join(".openidea").join("maven-settings.xml");
+    assert_eq!(user_settings(&cfg), Some(derived.clone()));
+    let text = std::fs::read_to_string(&derived).unwrap();
+    assert!(text.contains(&format!("<localRepository>{}</localRepository>", repo.to_string_lossy())));
+    // Stable across runs (no rewrite churn).
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(user_settings(&cfg), Some(derived.clone()));
+
+    // User settings without `<localRepository>`: the derived copy keeps the
+    // user's mirrors and gains the configured repository.
+    let settings = tmp.path().join("mine.xml");
+    std::fs::write(&settings, "<settings><mirrors><mirror><id>m</id></mirror></mirrors></settings>").unwrap();
+    s.languages.java.maven.user_settings = settings.to_string_lossy().into_owned();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(user_settings(&cfg), Some(derived.clone()));
+    let text = std::fs::read_to_string(&derived).unwrap();
+    assert!(text.contains("<mirror><id>m</id></mirror>"));
+    assert!(text.contains(&format!("<localRepository>{}</localRepository>", repo.to_string_lossy())));
+
+    // User settings already declaring `<localRepository>`: passed through untouched.
+    std::fs::write(&settings, "<settings><localRepository>/user/repo</localRepository></settings>").unwrap();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(user_settings(&cfg), Some(settings.clone()));
+
+    // Neither configured: no userSettings at all.
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
+    assert_eq!(user_settings(&cfg), None);
 }
 
 #[test]
@@ -427,6 +474,85 @@ fn maven_runner_jre_overrides_the_project_jdk() {
         let expected = crate::java::pick_jdk(&installed, Some(release));
         assert_eq!(crate::apply::maven_jdk(&root, &settings, Some(release)).as_ref(), expected);
     }
+}
+
+/// #2433: a `JAVA_HOME` an IDE-generated build-tool configuration carries came from Settings, so
+/// a corrected setting reaches the next run — also when an older version baked the value into a
+/// temporary configuration (and persisted it). A configuration of the user's own keeps its
+/// `JAVA_HOME`. Table-driven over the build-tool kinds and the state of the carried value.
+#[test]
+fn settings_win_over_a_generated_configurations_java_home() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    for name in ["old-jdk", "new-jdk", "user-jdk", "runner-jdk"] {
+        fake_jdk(&root.join(name));
+    }
+    let old = root.join("old-jdk").to_string_lossy().into_owned();
+    let new = root.join("new-jdk").to_string_lossy().into_owned();
+    let user = root.join("user-jdk").to_string_lossy().into_owned();
+    let runner = root.join("runner-jdk").to_string_lossy().into_owned();
+    let gone = root.join("removed-jdk").to_string_lossy().into_owned(); // never created
+
+    let mut settings = Settings::default();
+    settings.languages.java.jdk = "new-jdk".into();
+    assert_eq!(crate::apply::maven_build_env(&root, &settings, None)["JAVA_HOME"], new);
+
+    let launch = |config: &RunConfig| {
+        let mut c = config.clone();
+        if c.kind == "maven" {
+            // The Maven launcher's own path (`run_start`).
+            crate::apply::prepare_maven_run(&mut c, &root, &settings);
+        } else {
+            apply_to_run_configs(std::slice::from_mut(&mut c), &root, &settings);
+        }
+        c
+    };
+
+    // (kind, id, carried JAVA_HOME, what it runs with, whether a save keeps it)
+    for (kind, id, carried, runs_with, kept) in [
+        // A Maven goal from the tool window: Settings win, whether the carried JDK still exists.
+        ("maven", "maven:goal:pom.xml:compile", Some(old.as_str()), new.as_str(), false),
+        ("maven", "maven:goal:pom.xml:compile", Some(gone.as_str()), new.as_str(), false),
+        ("maven", "maven:goal:pom.xml:compile", None, new.as_str(), false),
+        // A saved Maven configuration keeps the JDK it carries.
+        ("maven", "maven:test", Some(user.as_str()), user.as_str(), true),
+        ("maven", "my-goal", Some(user.as_str()), user.as_str(), true),
+        // A Gradle task from the tool window: the Gradle JVM / Project JDK decides.
+        ("gradle", "gradle:task:[\":\",\":app\"]:test", Some(user.as_str()), new.as_str(), false),
+        ("gradle", "gradle:task:[\":\",\":app\"]:test", Some(gone.as_str()), new.as_str(), false),
+        // A Gradle task of the user's own keeps its JDK.
+        ("gradle", "my-task", Some(user.as_str()), user.as_str(), true),
+        // Tomcat keeps the JDK it carries: it is a field of that configuration.
+        ("tomcat", "tomcat:local", Some(user.as_str()), user.as_str(), true),
+    ] {
+        let command = if kind == "tomcat" { "catalina" } else { "mvn" };
+        let mut config = run(kind, command, &["compile"]);
+        config.id = id.into();
+        config.detected = false;
+        if let Some(home) = carried {
+            config.env.insert("JAVA_HOME".into(), home.to_owned());
+        }
+        let case = format!("{kind} {id} carried={carried:?}");
+        assert_eq!(launch(&config).env.get("JAVA_HOME").map(String::as_str), Some(runs_with), "{case}");
+        // Saved: a derived value is dropped so a later settings change still reaches it; the
+        // user's own value survives the round trip.
+        let saved = without_derived(&config, &root, &settings);
+        assert_eq!(saved.env.contains_key("JAVA_HOME"), kept, "{case} (saved={saved:?})");
+        assert_eq!(launch(&saved).env.get("JAVA_HOME").map(String::as_str), Some(runs_with), "{case} (after a save)");
+    }
+    // A corrected setting reaches a goal configuration that was saved with the old JDK baked in,
+    // without reopening the project: the Maven runner JRE (the reporter's field, #2433) wins.
+    let mut goal = run("maven", "mvn", &["compile"]);
+    goal.id = "maven:goal:pom.xml:compile".into();
+    goal.detected = false;
+    goal.env.insert("JAVA_HOME".into(), old.clone());
+    let saved = without_derived(&goal, &root, &settings);
+    assert!(!saved.env.contains_key("JAVA_HOME"));
+    let mut moved = settings.clone();
+    moved.languages.java.maven.runner_jre = "runner-jdk".into();
+    let mut next = saved;
+    crate::apply::prepare_maven_run(&mut next, &root, &moved);
+    assert_eq!(next.env["JAVA_HOME"], runner);
 }
 
 #[test]
@@ -2169,4 +2295,54 @@ fn project_structure_module_jdk_language_level_and_external_libraries() {
     });
     let groups = crate::libraries::project_libraries(root, &settings, &[]);
     assert!(groups.iter().any(|g| g.name == "servlet-api" && g.kind == "library" && g.roots.len() == 1));
+}
+
+#[test]
+fn plugin_interpreter_targets_route_all_php_node_command_families() {
+    let mut settings = Settings::default();
+    settings.languages.php.run_target = "plugin-target:php".into();
+    settings.languages.node.run_target = "plugin-target:node".into();
+    settings.languages.php.interpreter = "/local/php".into();
+    settings.languages.node.interpreter = "/local/node".into();
+    for (command, kind, expected) in [
+        ("php", "php", "php"),
+        ("composer", "composer", "php"),
+        ("vendor/bin/phpunit", "phpunit", "php"),
+        ("node", "node", "node"),
+        ("npm", "npm", "node"),
+        ("node_modules/.bin/vitest", "vitest", "node"),
+        ("npx", "node", "node"),
+    ] {
+        let mut config: ide_run::RunConfig = serde_json::from_value(serde_json::json!({ "id":"run", "name":"run", "kind":kind, "command":command, "args":[], "env":{}, "detected":true, "isTest":false })).unwrap();
+        crate::apply::apply_to_run_configs(std::slice::from_mut(&mut config), Path::new("/project"), &settings);
+        assert_eq!(config.extras.target.as_deref(), Some(format!("plugin-target:{expected}").as_str()));
+        assert_eq!(config.command, command);
+        assert!(config.env.is_empty());
+        assert!(crate::apply::without_derived(&config, Path::new("/project"), &settings).extras.target.is_none());
+        config.extras.target = Some(String::new());
+        crate::apply::apply_to_run_configs(std::slice::from_mut(&mut config), Path::new("/project"), &settings);
+        assert_eq!(config.extras.target.as_deref(), Some(""));
+    }
+}
+
+#[test]
+fn tool_installs_resolve_project_relative_sdks_and_leave_path_fallback_unconfigured() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let mut s = Settings::default();
+    let defaults = tool_install_environment(root, &s);
+    assert!(!defaults.commands.contains_key("go"));
+    assert!(!defaults.commands.contains_key("node"));
+    assert!(!defaults.commands.contains_key("python"));
+    assert!(!defaults.env.contains_key("GOROOT"));
+    s.languages.go.goroot = "go-sdk".into();
+    s.languages.node.interpreter = "node-sdk/bin/node".into();
+    s.languages.python.interpreter = "python-sdk/bin/python3.14".into();
+    s.languages.ruby.interpreter = "ruby-sdk/bin/ruby".into();
+    let runtime = tool_install_environment(root, &s);
+    assert_eq!(runtime.commands["go"], root.join("go-sdk/bin").join(if cfg!(windows) { "go.exe" } else { "go" }));
+    assert_eq!(runtime.env["GOROOT"], root.join("go-sdk").to_string_lossy());
+    assert_eq!(runtime.commands["node"], root.join("node-sdk/bin/node"));
+    assert_eq!(runtime.commands["python"], root.join("python-sdk/bin/python3.14"));
+    assert_eq!(runtime.commands["ruby"], root.join("ruby-sdk/bin/ruby"));
 }

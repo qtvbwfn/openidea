@@ -128,7 +128,7 @@ it("debugs a service in place without switching to the Debug tool window", async
     render(<ServicesTreeView />);
     select();
     fireEvent.click(toolbar().getByRole("button", { name: "Debug" }));
-    await vi.waitFor(() => expect(start).toHaveBeenCalledWith({ config, show: false }));
+    await vi.waitFor(() => expect(start).toHaveBeenCalledWith({ config, show: false, services: true }));
   } finally {
     disposeAction();
   }

@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
-pub const MAX_DOCUMENT_BYTES: usize = 2 << 20;
+pub const MAX_DOCUMENT_BYTES: usize = ide_lsp::MAX_INJECTED_DOCUMENT_BYTES;
 const MAX_FILES: usize = 20_000;
 const MAX_EDGES: usize = 4096;
 
@@ -197,6 +197,7 @@ impl PluginHost {
     /// navigation_at. Call off the UI thread, in small cancellable batches.
     pub fn index_navigation(&self, root: &Path, snapshot: Snapshot<'_>, invocation: Invocation) -> IdeResult<()> {
         let Snapshot { path, version, text, symbols, scope } = snapshot;
+        let path = dunce::simplified(path);
         if !(self.project_policy.read())(root) {
             return Err(IdeError::unavailable("project is not trusted"));
         }

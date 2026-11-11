@@ -22,6 +22,8 @@ const cmd = {
   syntaxIdentifiers: vi.fn((): R<unknown> => ok([])),
   syntaxErrors: vi.fn((): R<unknown> => ok({ errors: [], truncated: false })),
   findSymbols: vi.fn((): R<SymbolMatch[]> => ok([])),
+  navIndexDefinitions: vi.fn((): R<SymbolMatch[]> => ok([])),
+  navResolveModule: vi.fn((): R<string | null> => ok(null)),
   indexGoto: vi.fn((): R<unknown> => ok(null)),
   applyWorkspaceEdit: vi.fn((): R<unknown> => ok(null)),
 };
@@ -219,6 +221,21 @@ describe("declarationFallback", () => {
       kind: "unsupported",
     });
   });
+
+  it("answers a Vue component from the <script> region's shifted coordinates", async () => {
+    cmd.syntaxSupport.mockReturnValueOnce(ok({ tree: true, locals: true }));
+    // The backend answers a script region's local in document coordinates.
+    cmd.syntaxLocals.mockReturnValueOnce(ok(local({ name: "size", definition: r(9, 6, 10) })));
+    const res = await fb.declarationFallback({ ...doc, path: "/p/App.vue", language: "vue" }, text, {
+      line: 9,
+      col: 6,
+    });
+    expect(res).toEqual({
+      kind: "targets",
+      targets: [{ path: "/p/App.vue", range: r(9, 6, 10), name: "size" }],
+      ambiguous: false,
+    });
+  });
 });
 
 describe("rename helpers", () => {
@@ -267,6 +284,15 @@ describe("rename helpers", () => {
     expect(cmd.syntaxNodeAt).not.toHaveBeenCalled();
   });
 
+  it("plans a Vue component's local rename with shorthand detection", async () => {
+    cmd.syntaxLocals.mockReturnValueOnce(ok(local()));
+    const short = ok({ node: node("shorthand_property_identifier", r(1, 2, 3)), ancestors: [] });
+    cmd.syntaxNodeAt.mockReturnValueOnce(short);
+    cmd.syntaxNodeAt.mockReturnValueOnce(short);
+    const plan = await fb.planLocalRename({ doc: 7, language: "vue" }, { line: 1, col: 2 });
+    expect(plan.kind === "plan" && plan.plan.occurrences.map((o) => o.shorthand)).toEqual([true, true]);
+  });
+
   it("flags ambiguity and name clashes inside the scope", async () => {
     const plan = {
       symbol: (local({ certain: false, conflicts: [r(3, 0, 1)] }) as Extract<Locals, { status: "local" }>).symbol,
@@ -296,19 +322,182 @@ describe("rename helpers", () => {
 });
 
 describe("navigation wiring", () => {
+  it.each(["vue", "html", "svelte", "jsp"])("keeps %s server answers ahead of syntax", async (language) => {
+    const target = { path: `/p/a.${language}`, range: r(0, 6, 7), uri: null };
+    const view = editor("const x = 1;\nx;", language, 13, target.path);
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith(target.path, { selection: target.range.start, focus: true });
+    expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+    expect(cmd.syntaxNodeAt).not.toHaveBeenCalled();
+    invalidateConfigurationNavigation();
+    cmd.lspGoto.mockReturnValueOnce(ok([]));
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledOnce();
+    expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+  });
+
   it("respects an empty server answer", async () => {
     cmd.lspGoto.mockReturnValueOnce(ok([]));
-    // The caret sits on the `x` usage: locals says notLocal, so the flow
-    // consults the project index (which the mock leaves empty) before the
-    // hint shows.
-    cmd.syntaxLocals.mockReturnValueOnce(
-      ok({ status: "notLocal", name: "x", range: r(1, 0, 1), reason: "unresolved" }),
-    );
     const view = editor("const x = 1;\nx;", "typescript", 13);
     await gotoTargets(view, "definition");
-    expect(cmd.indexGoto).toHaveBeenCalled();
-    expect(cmd.syntaxLocals).toHaveBeenCalled();
+    expect(cmd.syntaxLocals).not.toHaveBeenCalled();
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Cannot find declaration to go to");
+  });
+
+  it("answers from the index when the server cannot resolve an import into a dependency project", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([]));
+    cmd.navIndexDefinitions.mockReturnValueOnce(ok([sym("ParallelDims", "class", "/deps/engine/model.py")]));
+    const view = editor("from torchtitan.distributed import ParallelDims;\n", "python", 35, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith("/deps/engine/model.py", {
+      selection: { line: 3, col: 4 },
+      focus: true,
+    });
+  });
+
+  it("opens the file a package segment of an import path names", async () => {
+    cmd.navResolveModule.mockReturnValueOnce(ok("/deps/torchtitan/__init__.py"));
+    cmd.navResolveModule.mockReturnValueOnce(ok("/deps/torchtitan/tools/logging.py"));
+    const view = editor("from torchtitan.tools.logging import logger;\n", "python", 6, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(cmd.navResolveModule).toHaveBeenCalledWith("torchtitan", "/p/a.py");
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/__init__.py", {
+      selection: { line: 0, col: 0 },
+      focus: true,
+    });
+    openFile.mockClear();
+    const deeper = editor("from torchtitan.tools.logging import logger;\n", "python", 24, "/p/a.py");
+    await gotoTargets(deeper, "definition");
+    expect(cmd.navResolveModule).toHaveBeenLastCalledWith("torchtitan.tools.logging", "/p/a.py");
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/tools/logging.py", {
+      selection: { line: 0, col: 0 },
+      focus: true,
+    });
+  });
+
+  it("never looks a module path segment up as a symbol name", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([]));
+    const view = editor("from torchtitan.tools.logging import logger;\n", "python", 17, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(cmd.navResolveModule).toHaveBeenCalledWith("torchtitan.tools", "/p/a.py");
+    expect(cmd.navIndexDefinitions).not.toHaveBeenCalled();
+    expect(openFile).not.toHaveBeenCalled();
+    expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Cannot find declaration to go to");
+  });
+
+  it("still looks the imported name up, not the module path", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([]));
+    cmd.navIndexDefinitions.mockReturnValueOnce(ok([sym("logger", "variable", "/deps/torchtitan/tools/logging.py")]));
+    const view = editor("from torchtitan.tools.logging import logger;\n", "python", 39, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(cmd.navResolveModule).not.toHaveBeenCalled();
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/tools/logging.py", {
+      selection: { line: 3, col: 4 },
+      focus: true,
+    });
+  });
+
+  it("shows usages on a declaration even when a plugin adds another target", async () => {
+    // A MyBatis mapper method: the server answers the method itself, the plugin its XML statement.
+    cmd.lspGoto.mockReturnValueOnce(
+      ok([
+        { path: "/p/UserMapper.xml", range: r(3, 16, 24) },
+        { path: "/p/UserMapper.java", range: r(3, 11, 19) },
+      ]),
+    );
+    const view = editor(
+      "package demo;\n\npublic interface UserMapper {\n    String findName(Long id);\n}\n",
+      "java",
+      58,
+      "/p/UserMapper.java",
+    );
+    await gotoTargets(view, "definition");
+    expect(executeAction).toHaveBeenCalledWith("find.showUsages");
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
+  it("looks past a server answer that points at the import itself", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([{ path: "/p/a.py", range: r(0, 37, 43) }]));
+    cmd.navIndexDefinitions.mockReturnValueOnce(ok([sym("logger", "variable", "/deps/torchtitan/tools/logging.py")]));
+    const view = editor("from torchtitan.tools.logging import logger;\n", "python", 39, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/tools/logging.py", {
+      selection: { line: 3, col: 4 },
+      focus: true,
+    });
+    expect(executeAction).not.toHaveBeenCalledWith("find.showUsages");
+  });
+
+  it("narrows a plain import with a trailing comment the same way", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([{ path: "/p/a.py", range: r(0, 32, 39) }]));
+    cmd.navResolveModule
+      .mockImplementationOnce(() => ok(null)) // the segment click did not resolve: the answer came from the server
+      .mockImplementationOnce(() => ok(null)) // the name is not a submodule of the module
+      .mockImplementationOnce(() => ok("/deps/torchtitan/models/common/decoder.py"));
+    cmd.navIndexDefinitions.mockReturnValueOnce(
+      ok([sym("Decoder", "class", "/deps/torchtitan/models/common/decoder.py")]),
+    );
+    const view = editor("import torchtitan.models.common.decoder  # Decoder\n", "python", 36, "/p/a.py");
+    await gotoTargets(view, "definition");
+    // The plain import's name is the module segment itself: the index has no exact
+    // "decoder" symbol, so the narrowed answer is the module file.
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/models/common/decoder.py", {
+      selection: { line: 0, col: 0 },
+      focus: true,
+    });
+    expect(executeAction).not.toHaveBeenCalledWith("find.showUsages");
+  });
+
+  it("narrows a self-pointed import answer to the module the import names", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([{ path: "/p/a.py", range: r(0, 45, 52) }]));
+    cmd.navResolveModule
+      .mockImplementationOnce(() => ok(null)) // the name is not a submodule of the module
+      .mockImplementationOnce(() => ok("/deps/torchtitan/models/common/decoder.py"));
+    cmd.navIndexDefinitions.mockReturnValueOnce(
+      ok([
+        sym("Decoder", "class", "/deps/torchtitan/models/common/decoder.py"),
+        sym("Decoder", "class", "/deps/torchtitan/models/flux/autoencoder.py"),
+      ]),
+    );
+    const view = editor("from torchtitan.models.common.decoder import Decoder\n", "python", 47, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/models/common/decoder.py", {
+      selection: { line: 3, col: 4 },
+      focus: true,
+    });
+    expect(executeAction).not.toHaveBeenCalledWith("find.showUsages");
+  });
+
+  it("jumps to the file when an imported name is a submodule", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([{ path: "/p/a.py", range: r(0, 30, 37) }]));
+    cmd.navResolveModule.mockImplementationOnce(() => ok("/deps/torchtitan/models/decoder/__init__.py"));
+    const view = editor("from torchtitan.models import decoder\n", "python", 35, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/models/decoder/__init__.py", {
+      selection: { line: 0, col: 0 },
+      focus: true,
+    });
+    expect(cmd.navIndexDefinitions).not.toHaveBeenCalled();
+  });
+
+  it("narrows a listed name of a parenthesised import to its module", async () => {
+    cmd.lspGoto.mockReturnValueOnce(ok([{ path: "/p/a.py", range: r(1, 2, 9) }]));
+    cmd.navResolveModule
+      .mockImplementationOnce(() => ok(null))
+      .mockImplementationOnce(() => ok("/deps/torchtitan/models/common/decoder.py"));
+    cmd.navIndexDefinitions.mockReturnValueOnce(
+      ok([
+        sym("Decoder", "class", "/deps/torchtitan/models/common/decoder.py"),
+        sym("Decoder", "class", "/deps/torchtitan/models/flux/autoencoder.py"),
+      ]),
+    );
+    const view = editor("from torchtitan.models.common.decoder import (\n  Decoder,\n)\n", "python", 52, "/p/a.py");
+    await gotoTargets(view, "definition");
+    expect(openFile).toHaveBeenCalledWith("/deps/torchtitan/models/common/decoder.py", {
+      selection: { line: 3, col: 4 },
+      focus: true,
+    });
   });
 
   it("says why when the server only checks the file's syntax", async () => {
@@ -773,7 +962,7 @@ describe("modifier-hover navigation recovery", () => {
     expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
   });
 
-  it("retries a stuck configuration probe without retaining the late response", async () => {
+  it("re-probes a stuck configuration lookup through the running request, without retaining its empty answer", async () => {
     let finish!: (value: Awaited<R<unknown>>) => void;
     cmd.lspGoto.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -785,16 +974,16 @@ describe("modifier-hover navigation recovery", () => {
     try {
       move(view, 1);
       await vi.advanceTimersByTimeAsync(3001);
-      cmd.lspGoto.mockReturnValueOnce(ok([target]));
       move(view, 1);
       await vi.advanceTimersByTimeAsync(0);
-      expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+      expect(cmd.lspGoto).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
-    await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")).not.toBeNull());
     finish({ status: "ok", data: [] });
     await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(view.dom.querySelector(".cm-lsp-link")).toBeNull();
+    cmd.lspGoto.mockReturnValueOnce(ok([target]));
     await gotoTargets(view, "definition", 1);
     expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
     expect(openFile).toHaveBeenCalledOnce();
@@ -822,7 +1011,7 @@ describe("modifier-hover navigation recovery", () => {
     expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
   });
 
-  it("retries a stuck probe and ignores its eventual response", async () => {
+  it("re-probes a stuck word through the running request", async () => {
     let finish!: (value: Awaited<R<unknown>>) => void;
     cmd.lspGoto.mockReturnValueOnce(
       new Promise((resolve) => {
@@ -834,17 +1023,15 @@ describe("modifier-hover navigation recovery", () => {
     try {
       move(view);
       await vi.advanceTimersByTimeAsync(3001);
-      cmd.lspGoto.mockReturnValueOnce(ok([target]));
       move(view);
       await vi.advanceTimersByTimeAsync(0);
-      expect(cmd.lspGoto).toHaveBeenCalledTimes(2);
+      expect(cmd.lspGoto).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
+    finish(await ok([target]));
     await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("foo"));
-    finish({ status: "ok", data: [] });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("foo");
+    expect(cmd.lspGoto).toHaveBeenCalledOnce();
   });
 
   it("ignores a late probe after moving to a different word", async () => {
@@ -879,19 +1066,14 @@ describe("same-document fragment navigation", () => {
 });
 
 describe("declarationFallback via the project index", () => {
-  const doc = { doc: 7, path: "/p/App.vue", language: "vue" };
+  // Unique language ids: structure.support caches per language at module level and other
+  // describes warm "vue"/"typescript" with a grammar — a fresh id keeps the mocked
+  // support state (the grammar gate) authoritative for these tests.
+  const doc = { doc: 7, path: "/p/App.vue", language: "vue-index" };
   const text = Text.of(["<template>", "  <UserCard/>", "</template>"]);
 
-  beforeEach(() => {
-    cmd.syntaxSupport.mockReturnValue(ok({ tree: false, locals: false }));
-    cmd.findSymbols.mockClear();
-  });
-  afterEach(() => {
-    cmd.syntaxSupport.mockReturnValue(ok({ tree: true, locals: true }));
-    cmd.indexGoto.mockReturnValue(ok(null));
-  });
-
   it("answers for vue from indexGoto before the grammar gate rejects the language", async () => {
+    cmd.syntaxSupport.mockReturnValueOnce(ok({ tree: false, locals: false }));
     cmd.indexGoto.mockReturnValueOnce(
       ok({ targets: [{ path: "/p/UserCard.vue", range: r(0, 0, 8), uri: null }], note: "certain" }),
     );
@@ -906,8 +1088,9 @@ describe("declarationFallback via the project index", () => {
   });
 
   it("prefers the import chain over name matching for typescript too", async () => {
-    const ts = { doc: 8, path: "/p/a.ts", language: "typescript" };
+    const ts = { doc: 8, path: "/p/a.ts", language: "ts-index-chain" };
     const tsText = Text.of(["import { get } from './api';", "get('/x');"]);
+    cmd.syntaxSupport.mockReturnValueOnce(ok({ tree: true, locals: true }));
     cmd.syntaxLocals.mockReturnValueOnce(ok({ status: "notLocal", name: "get", range: r(1, 0, 3), reason: "member" }));
     cmd.indexGoto.mockReturnValueOnce(
       ok({ targets: [{ path: "/p/api/client.ts", range: r(2, 0, 3), uri: null }], note: "certain" }),
@@ -922,8 +1105,9 @@ describe("declarationFallback via the project index", () => {
   });
 
   it("falls through to symbol matching when the index cannot answer", async () => {
-    const ts = { doc: 8, path: "/p/a.ts", language: "typescript" };
+    const ts = { doc: 8, path: "/p/a.ts", language: "ts-index-symbols" };
     const tsText = Text.of(["import { get } from './api';", "foo();"]);
+    cmd.syntaxSupport.mockReturnValueOnce(ok({ tree: true, locals: true }));
     cmd.syntaxLocals.mockReturnValueOnce(ok({ status: "notLocal", name: "foo", range: r(1, 0, 3), reason: "member" }));
     cmd.findSymbols.mockReturnValueOnce(
       ok([
@@ -945,6 +1129,7 @@ describe("declarationFallback via the project index", () => {
   });
 
   it("answers unsupported for vue when the index cannot answer", async () => {
+    cmd.syntaxSupport.mockReturnValueOnce(ok({ tree: false, locals: false }));
     expect(await fb.declarationFallback(doc, text, { line: 1, col: 3 })).toEqual({ kind: "unsupported" });
   });
 });

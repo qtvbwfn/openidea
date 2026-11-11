@@ -1,0 +1,335 @@
+{
+  "numTotalTestSuites": 8,
+  "numPassedTestSuites": 5,
+  "numFailedTestSuites": 3,
+  "numPendingTestSuites": 0,
+  "numTotalTests": 27,
+  "numPassedTests": 19,
+  "numFailedTests": 2,
+  "numPendingTests": 6,
+  "numTodoTests": 0,
+  "snapshot": {
+    "added": 0,
+    "failure": false,
+    "filesAdded": 0,
+    "filesRemoved": 0,
+    "filesRemovedList": [],
+    "filesUnmatched": 0,
+    "filesUpdated": 0,
+    "matched": 0,
+    "total": 0,
+    "unchecked": 0,
+    "uncheckedKeysByFile": [],
+    "unmatched": 0,
+    "updated": 0,
+    "didUpdate": false
+  },
+  "startTime": 1794358620717,
+  "success": false,
+  "testResults": [
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [],
+          "fullName": "reads backend messages after quote character literals",
+          "status": "passed",
+          "title": "reads backend messages after quote character literals",
+          "duration": 2.408212000000276,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [],
+          "fullName": "reads backend messages continued over a line",
+          "status": "passed",
+          "title": "reads backend messages continued over a line",
+          "duration": 0.28167800000119314,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [],
+          "fullName": "passes no template literal UI text to an exact lookup; tag it as tx`…`",
+          "status": "passed",
+          "title": "passes no template literal UI text to an exact lookup; tag it as tx`…`",
+          "duration": 0.8389320000005682,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [],
+          "fullName": "translates built text as whole sentences, one per variant",
+          "status": "passed",
+          "title": "translates built text as whole sentences, one per variant",
+          "duration": 0.713235999999597,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [],
+          "fullName": "reads the imported and bound names of the message function",
+          "status": "passed",
+          "title": "reads the imported and bound names of the message function",
+          "duration": 0.7226080000000366,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [],
+          "fullName": "uses only message keys of the English catalog",
+          "status": "passed",
+          "title": "uses only message keys of the English catalog",
+          "duration": 0.8128900000010617,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog en"],
+          "fullName": "source-text catalog en translates every literal UI text",
+          "status": "skipped",
+          "title": "translates every literal UI text",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog en"],
+          "fullName": "source-text catalog en has one entry per template, whatever its placeholder names",
+          "status": "passed",
+          "title": "has one entry per template, whatever its placeholder names",
+          "duration": 0.9457739999998012,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog en"],
+          "fullName": "source-text catalog en has no entries whose text no longer appears in the source",
+          "status": "failed",
+          "title": "has no entries whose text no longer appears in the source",
+          "duration": 13.459461999998894,
+          "failureMessages": [
+            "AssertionError: expected [ …(12) ] to deeply equal []\n    at /Users/qingwei/Documents/dev_svn/public/openidea/src/platform/locales/textCatalog.test.ts:700:19\n    at file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:1632:35\n    at file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:2801:26\n    at file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:3338:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:3333:10)\n    at file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:3318:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:3276:10)\n    at file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:3904:64"
+          ],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog es"],
+          "fullName": "source-text catalog es translates every literal UI text",
+          "status": "skipped",
+          "title": "translates every literal UI text",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog es"],
+          "fullName": "source-text catalog es has one entry per template, whatever its placeholder names",
+          "status": "passed",
+          "title": "has one entry per template, whatever its placeholder names",
+          "duration": 2.6982590000006894,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog es"],
+          "fullName": "source-text catalog es has no entries whose text no longer appears in the source",
+          "status": "passed",
+          "title": "has no entries whose text no longer appears in the source",
+          "duration": 5.539699000000837,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog fr"],
+          "fullName": "source-text catalog fr translates every literal UI text",
+          "status": "skipped",
+          "title": "translates every literal UI text",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog fr"],
+          "fullName": "source-text catalog fr has one entry per template, whatever its placeholder names",
+          "status": "passed",
+          "title": "has one entry per template, whatever its placeholder names",
+          "duration": 3.134357999999338,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog fr"],
+          "fullName": "source-text catalog fr has no entries whose text no longer appears in the source",
+          "status": "passed",
+          "title": "has no entries whose text no longer appears in the source",
+          "duration": 7.688398000000234,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog ko"],
+          "fullName": "source-text catalog ko translates every literal UI text",
+          "status": "skipped",
+          "title": "translates every literal UI text",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog ko"],
+          "fullName": "source-text catalog ko has one entry per template, whatever its placeholder names",
+          "status": "passed",
+          "title": "has one entry per template, whatever its placeholder names",
+          "duration": 3.17099700000108,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog ko"],
+          "fullName": "source-text catalog ko has no entries whose text no longer appears in the source",
+          "status": "passed",
+          "title": "has no entries whose text no longer appears in the source",
+          "duration": 4.6134170000004815,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog pl"],
+          "fullName": "source-text catalog pl translates every literal UI text",
+          "status": "skipped",
+          "title": "translates every literal UI text",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog pl"],
+          "fullName": "source-text catalog pl has one entry per template, whatever its placeholder names",
+          "status": "passed",
+          "title": "has one entry per template, whatever its placeholder names",
+          "duration": 1.663445000000138,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog pl"],
+          "fullName": "source-text catalog pl has no entries whose text no longer appears in the source",
+          "status": "passed",
+          "title": "has no entries whose text no longer appears in the source",
+          "duration": 5.432264999999461,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog pt"],
+          "fullName": "source-text catalog pt translates every literal UI text",
+          "status": "skipped",
+          "title": "translates every literal UI text",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog pt"],
+          "fullName": "source-text catalog pt has one entry per template, whatever its placeholder names",
+          "status": "passed",
+          "title": "has one entry per template, whatever its placeholder names",
+          "duration": 2.7060249999994994,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog pt"],
+          "fullName": "source-text catalog pt has no entries whose text no longer appears in the source",
+          "status": "passed",
+          "title": "has no entries whose text no longer appears in the source",
+          "duration": 7.040275000001202,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog zh"],
+          "fullName": "source-text catalog zh translates every literal UI text",
+          "status": "passed",
+          "title": "translates every literal UI text",
+          "duration": 53.10800500000005,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog zh"],
+          "fullName": "source-text catalog zh has one entry per template, whatever its placeholder names",
+          "status": "passed",
+          "title": "has one entry per template, whatever its placeholder names",
+          "duration": 2.1228859999991982,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": ["source-text catalog zh"],
+          "fullName": "source-text catalog zh has no entries whose text no longer appears in the source",
+          "status": "failed",
+          "title": "has no entries whose text no longer appears in the source",
+          "duration": 10.786482999999862,
+          "failureMessages": [
+            "AssertionError: expected [ 'ACP Registry', 'Built-in', …(35) ] to deeply equal []\n    at /Users/qingwei/Documents/dev_svn/public/openidea/src/platform/locales/textCatalog.test.ts:700:19\n    at file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:1632:35\n    at file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:2801:26\n    at file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:3338:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:3333:10)\n    at file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:3318:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:3276:10)\n    at file:///Users/qingwei/Documents/dev_svn/public/openidea/node_modules/.pnpm/vitest@5.0.5_@types+node@26.6.5_jsdom@30.1.3_vite@8.3.4_@types+node@26.6.5_jiti@2.7.0_yaml@2.9.1_/node_modules/vitest/dist/chunks/run.BPv-BBRv.js:3904:64"
+          ],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        }
+      ],
+      "startTime": 1794358630339,
+      "endTime": 1794358630469.7864,
+      "status": "failed",
+      "message": "",
+      "name": "/Users/qingwei/Documents/dev_svn/public/openidea/src/platform/locales/textCatalog.test.ts"
+    }
+  ]
+}

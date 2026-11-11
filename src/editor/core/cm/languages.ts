@@ -88,6 +88,11 @@ const OWN_MODES = [
     load: () => import("./asciidoc").then((m) => new LanguageSupport(m.asciidocLanguage)),
   }),
   LanguageDescription.of({
+    name: "reStructuredText",
+    extensions: ["rst"],
+    load: () => import("./restructuredtext").then((m) => new LanguageSupport(m.restructuredtextLanguage)),
+  }),
+  LanguageDescription.of({
     name: "Log",
     extensions: ["log"],
     load: () => import("./log").then((m) => new LanguageSupport(m.logLanguage)),
@@ -130,6 +135,12 @@ const OWN_MODES = [
     name: "Astro",
     extensions: ["astro"],
     load: () => import("./astro").then((m) => m.astro()),
+  }),
+  // Overrides the language-data Vue mode so `<style lang="scss">` highlights.
+  LanguageDescription.of({
+    name: "Vue",
+    extensions: ["vue"],
+    load: () => import("./vue").then((m) => m.vueLanguage()),
   }),
   LanguageDescription.of({
     name: "YAML",
@@ -322,7 +333,16 @@ const DEDENT_STATEMENT = /^\s*(?:pass|break|continue|return)\b/;
 const KEYWORD_OPEN_LANGS = new Set(["elixir", "ruby", "lua"]);
 const KEYWORD_OPEN =
   /\b(?:do(?:\s*\|[^|]*\|)?|then|->)$|^\s*(?:def|defp|defmodule|class|module|function|local\s+function|if|unless|elsif|elseif|else|while|until|for|case|begin|cond|with|receive|try)\b/;
-const NO_INDENT_LANGS = new Set(["plaintext", "markdown", "asciidoc", "log", "diff", "ignore", "gitattributes"]);
+const NO_INDENT_LANGS = new Set([
+  "plaintext",
+  "markdown",
+  "asciidoc",
+  "restructuredtext",
+  "log",
+  "diff",
+  "ignore",
+  "gitattributes",
+]);
 
 function opensBlock(code: string, language: string | undefined): boolean {
   if (!code) return false;

@@ -14,9 +14,6 @@ import { tx } from "@/platform/i18n";
 /** Subtle marker for answers that did not come from the language server. */
 export const SYNTAX_NOTE = "Based on syntax (language server not ready)";
 
-/** Same, for answers from the project index (imports, re-exports, components). */
-export const INDEX_NOTE = "Based on project index (language server not ready)";
-
 /** A declaration candidate; index symbols carry their name, kind and container. */
 export interface DeclarationTarget extends Location {
   name?: string;
@@ -32,7 +29,7 @@ export type DeclarationFallback =
       kind: "targets";
       targets: DeclarationTarget[];
       ambiguous: boolean;
-      /** Where the answer came from, for the post-navigation hint. */ note?: string;
+      /** The project index answered (the import chain): the UI labels it. */ note?: string | null;
     };
 
 const TYPE_KINDS: ReadonlySet<SymbolKind> = new Set([
@@ -140,9 +137,27 @@ export function localTargets(path: string, symbol: LocalSymbol): { targets: Decl
 const SYMBOL_LIMIT = 500;
 
 /**
- * The word at `col` in the line (the caret may sit anywhere inside it):
- * what the project index resolves. Null outside a word.
+ * Index definitions named `name` — what the project index knows beyond the language
+ * server's scope: only the roots `path` may navigate into (its own root plus its
+ * configured dependencies; see Project Structure › Dependencies). No local-variable
+ * heuristics: an empty server answer stays authoritative about the code it analyses.
  */
+export async function indexDefinitions(path: string, name: string): Promise<DeclarationTarget[]> {
+  const matches = await call(commands.navIndexDefinitions(name, path));
+  const symbols = filterSymbols(matches, name, "other").filter((s) => compatibleFiles(path, s.path));
+  return rankTargets(
+    symbols.map((s) => ({ path: s.path, range: s.range, name: s.name, kind: s.kind, container: s.container })),
+    path,
+  );
+}
+
+/**
+ * Go to Declaration without a language server: a certain local definition,
+ * otherwise project index symbols with exactly that name (filtered by the
+ * syntactic role when the tree tells). Call after `whenSynced`.
+ */
+/** The word at `col` in the line (the caret may sit anywhere inside it):
+ * what the project index resolves. Null outside a word. */
 function wordAround(line: string, col: number): string | null {
   const isWord = (c: string | undefined) => !!c && /[\p{L}\p{N}_$]/u.test(c);
   if (!isWord(line[col])) {
@@ -157,12 +172,10 @@ function wordAround(line: string, col: number): string | null {
   return IDENT.test(word) ? word : null;
 }
 
-/**
- * Where the project index resolves the word at `pos` to without a language
+/** Where the project index resolves the word at `pos` to without a language
  * server — the import chain, re-exports, script-setup state and component
  * tags, vue included (`name` overrides the word when the scope analysis
- * knows it). Null when the index cannot answer.
- */
+ * knows it). Null when the index cannot answer. */
 async function indexTargets(
   doc: { doc: number; path: string; language: string },
   text: Text,
@@ -176,13 +189,6 @@ async function indexTargets(
   return { kind: "targets", targets: indexed.targets, ambiguous: indexed.targets.length > 1, note: INDEX_NOTE };
 }
 
-/**
- * Go to Declaration without a language server: a certain local definition,
- * the project index (imports, re-exports, components — its goto runs the
- * region scope analysis of a Vue `<script>` server-side), then project index
- * symbols with exactly that name (filtered by the syntactic role when the
- * tree tells). Call after `whenSynced`.
- */
 export async function declarationFallback(
   doc: { doc: number; path: string; language: string },
   text: Text,
@@ -192,7 +198,7 @@ export async function declarationFallback(
   const support = await structure.support(doc.language);
   if (!support.tree) {
     // No grammar (Vue SFCs, …): the index answers instead — this branch is
-    // where vue lands (E15: the old code returned `unsupported` here).
+    // where vue lands.
     return (await indexTargets(doc, text, pos, null)) ?? { kind: "unsupported" };
   }
   let locals: Locals | null = null;
@@ -218,6 +224,8 @@ export async function declarationFallback(
 }
 
 const IDENT = /^[\p{L}_$][\p{L}\p{N}_$]*$/u;
+
+export const INDEX_NOTE = "Based on project index (language server not ready)";
 
 /** Name of a leaf identifier node (languages without `locals.scm`). */
 function identifierText(text: Text, at: NodeAt | null): string | null {
@@ -253,8 +261,19 @@ export function localHighlights(locals: Locals): LocalHighlight[] | null {
 // ---------------------------------------------------------------------------
 // Rename
 
-/** Languages whose shorthand fields (`{ x }`, `S { x }`) name both a key and a variable. */
-const SHORTHAND_LANGUAGES = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact", "rust"]);
+/** Languages whose shorthand fields (`{ x }`, `S { x }`) name both a key and a variable;
+ * the web containers host the same TS/JS inside their `<script>` blocks. */
+const SHORTHAND_LANGUAGES = new Set([
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+  "rust",
+  "vue",
+  "svelte",
+  "html",
+  "jsp",
+]);
 const SHORTHAND_NODES = new Set([
   "shorthand_property_identifier",
   "shorthand_property_identifier_pattern",

@@ -10,15 +10,19 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/l0ng-ai/openidea/blob/main/README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/l0ng-ai/openidea/releases/latest"><b>Download</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://openidea.sh">Docs</a>
   &nbsp;·&nbsp;
   <a href="#benchmark">Benchmark</a>
   &nbsp;·&nbsp;
   <a href="#plugins">Plugins</a>
   &nbsp;·&nbsp;
-  <a href="https://discord.gg/2Zy4yn7gP">Discord</a>
-  &nbsp;·&nbsp;
-  <a href="https://github.com/qtvbwfn/openidea/blob/main/README.zh-CN.md">中文</a>
+  <a href="#community">Community</a>
 </p>
 
 https://github.com/user-attachments/assets/234dd54c-1255-4b3a-b35c-533d78d737c0
@@ -27,9 +31,7 @@ OpenIDEA brings the IntelliJ IDEA way of working — its keymap, its tool window
 its search-everything habits — to a native app with a Rust core.
 
 Editor, code insight, debugger, Git, terminal, database and HTTP clients,
-for 60+ languages. Builds for macOS, Windows and Linux. On Windows, if you'd
-rather skip the installer, each release also ships a portable zip — unpack it
-and run `openidea.exe`.
+for 60+ languages. Builds for macOS, Windows and Linux.
 
 ## Benchmark
 
@@ -58,43 +60,17 @@ themes, file icons and languages. They run as sandboxed WebAssembly components;
 themes, icon themes and languages need no code at all.
 
 Install them from Settings › Plugins, or start your own with
-`openidea-plugin new` — see [Writing OpenIDEA plugins](plugins/README.md) and
+`openidea-plugin new` — see [Writing OpenIDEA plugins](https://openidea.sh/en/plugins) and
 the [official plugins](plugins/official). The plugin API is still a preview.
 
-## Build
+## Community
 
-```sh
-pnpm install
-pnpm tauri dev
-```
+- [Discord](https://discord.gg/2Zy4yn7gP) — questions, feedback and release news.
+- WeChat group — scan to join:
 
-Rust 1.96, Node 22, pnpm and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
+  <img src=".github/assets/wechat-group.png" alt="WeChat group QR code" width="200">
 
-Native notebook execution tests are opt-in and need two distinct Python environments
-with `ipykernel` installed:
-
-```sh
-OPENIDEA_TEST_PYTHON=/first/env/bin/python \
-OPENIDEA_TEST_PYTHON_SECOND=/second/env/bin/python \
-cargo test -p ide-notebook --test kernel_runtime -- --ignored --test-threads=1
-```
-
-## Configuration directory
-
-Settings, data, managed tools and logs live in the platform's standard
-directories (Tauri's `app_config_dir` / `app_data_dir`). To keep everything in
-one place of your choosing, open **Settings › System Settings › Configuration
-directory** and pick a base directory — config/ and system/ are created under
-it, and on the next start a dialog offers to move the existing data there
-(old paths in settings are rewritten and the old directories go to the
-trash). "Reset to default" moves everything back the same way. The
-`OPENIDEA_HOME` environment variable does the same and takes precedence.
-
-### Contributors
-
-<a href="https://github.com/l0ng-ai/openidea/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=l0ng-ai/openidea&max=100" alt="OpenIDEA contributors">
-</a>
+- Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md) and the [contributor docs](https://openidea.sh/en/contribute/setup).
 
 ## License
 

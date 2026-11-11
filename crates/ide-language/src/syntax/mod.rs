@@ -10,6 +10,7 @@ pub(crate) mod lines;
 mod literals;
 mod modules;
 mod outline;
+mod rst;
 mod selection;
 mod sfc;
 mod web;
@@ -21,6 +22,7 @@ pub use external::{ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken, 
 use grammars::{SPECS, Spec};
 pub use highlight::{SyntaxHighlightKind, SyntaxHighlights};
 use ide_core::{LanguageId, OutlineItem, Pos, Range};
+pub use lines::{shift_pos, shift_range};
 pub use literals::{Literal, LiteralKind, SpellingKind, SpellingRegion};
 pub use outline::merge_visibility;
 use std::cell::RefCell;
@@ -167,35 +169,37 @@ impl Syntax {
     }
 
     pub fn outline(&self, lang: &LanguageId, text: &str) -> Vec<OutlineItem> {
-        let mut items = self
-            .analyze(lang, text, |g, tree, text| {
-                let query = g.outline_query()?;
-                Some(outline::outline(g, query, tree, text))
-            })
-            .unwrap_or_default();
-        // Vue SFCs and HTML documents: the markup outline gains the `<script>`
-        // declarations (the HTML grammar's outline has nothing for them) —
-        // this is the Structure view's data, and a .vue file without it only
-        // ever showed markup.
-        if matches!(lang.as_str(), "vue" | "svelte" | "jsp" | "html" | "htm") {
-            let (facts, _) = self.script_analysis(lang, text);
-            let mut decls: Vec<OutlineItem> = facts
-                .decls
-                .into_iter()
-                .map(|d| OutlineItem {
-                    name: d.name,
-                    detail: None,
-                    kind: d.kind,
-                    range: d.range,
-                    selection_range: d.range,
-                    children: Vec::new(),
-                    visibility: None,
-                })
-                .collect();
-            items.append(&mut decls);
-            items.sort_by_key(|i| (i.selection_range.start.line, i.selection_range.start.col));
+        // HTML containers (Vue SFC / Svelte / JSP have no grammar of their own;
+        // HTML itself parses alike): HTML outline with each inline `<script>`'s
+        // TS/JS declarations nested under its entry, in document coordinates.
+        if let Some(items) = self.web_outline(lang, text) {
+            return items;
         }
-        items
+        self.analyze(lang, text, |g, tree, text| {
+            let query = g.outline_query()?;
+            Some(outline::outline(g, query, tree, text))
+        })
+        .or_else(|| self.builtin_outline(lang, text))
+        .unwrap_or_default()
+    }
+
+    /// Outline for languages without a grammar that have a built-in parser.
+    fn builtin_outline(&self, lang: &LanguageId, text: &str) -> Option<Vec<OutlineItem>> {
+        (lang.as_str() == "restructuredtext" && text.len() <= MAX_PARSE_BYTES).then(|| rst::outline(text))
+    }
+
+    /// Outline of an HTML container document (html, vue, svelte, jsp): `None`
+    /// for every other language, CSS containers included.
+    pub(crate) fn web_outline(&self, lang: &LanguageId, text: &str) -> Option<Vec<OutlineItem>> {
+        let g = self.web_grammar(lang)?;
+        if g.spec.name != "html" || text.len() > MAX_PARSE_BYTES {
+            return None;
+        }
+        let tree = parse(&g.language, text, None)?;
+        let query = g.outline_query()?;
+        Some(outline::outline_nested(g, query, &tree, text, &|region_lang, region_text| {
+            self.outline(region_lang, region_text)
+        }))
     }
 
     pub fn folding(&self, lang: &LanguageId, text: &str) -> Vec<FoldRange> {
@@ -278,6 +282,13 @@ impl Syntax {
     /// languages): what [`Syntax::script_facts`] parses per block.
     pub fn script_regions(&self, lang: &LanguageId, text: &str) -> Vec<ScriptRegion> {
         self.with_web_tree(lang, text, |_g, _css, tree| sfc::script_regions(tree, text)).unwrap_or_default()
+    }
+
+    /// The `<script>` regions of an already-parsed document (the caller owns
+    /// the tree): the same regions [`Syntax::script_regions`] answers, without
+    /// re-parsing.
+    pub fn script_regions_of(tree: &tree_sitter::Tree, text: &str) -> Vec<ScriptRegion> {
+        sfc::script_regions(tree, text)
     }
 
     /// The `<script>` region containing `pos`, with `pos` re-based into it:
@@ -367,6 +378,13 @@ impl Syntax {
     /// Name of the bundled grammar used for `lang`, if any.
     pub fn grammar_name(&self, lang: &LanguageId) -> Option<&'static str> {
         self.grammar(lang).map(|g| g.spec.name)
+    }
+
+    /// Name of the grammar web features parse `lang` with (html for Vue SFC /
+    /// Svelte / JSP, css for SCSS / Less); `None` when `lang` has its own
+    /// grammar or no web features. Lets other crates recognize containers.
+    pub fn web_grammar_name(&self, lang: &LanguageId) -> Option<&'static str> {
+        self.web_grammar(lang).map(|g| g.spec.name)
     }
 
     /// Grammar name and tree-sitter language for `lang`, for engines that parse

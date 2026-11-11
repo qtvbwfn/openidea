@@ -3,13 +3,11 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { commands, Location } from "@/platform/ipc";
 
-const { lspGoto, indexGoto, lspGotoImplementation, cancelRequest } = vi.hoisted(() => ({
+const { lspGoto, lspGotoImplementation, cancelRequest } = vi.hoisted(() => ({
   lspGoto: vi.fn<typeof commands.lspGoto>(),
-  indexGoto: vi.fn<typeof commands.indexGoto>(),
   lspGotoImplementation: vi.fn<typeof commands.lspGotoImplementation>(),
   cancelRequest: vi.fn<typeof commands.cancelRequest>(async () => {}),
 }));
-indexGoto.mockResolvedValue({ status: "ok", data: null });
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   const fsReadText: typeof commands.fsReadText = async () => ({
@@ -19,7 +17,7 @@ vi.mock("@/platform/ipc", async (orig) => {
   return {
     ...real,
     isTauri: () => true,
-    commands: { ...real.commands, lspGoto, indexGoto, lspGotoImplementation, cancelRequest, fsReadText },
+    commands: { ...real.commands, lspGoto, lspGotoImplementation, cancelRequest, fsReadText },
   };
 });
 vi.mock("@tauri-apps/api/core", async (orig) => ({
@@ -29,9 +27,10 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
   },
 }));
 
-const { gotoTargets, navigationExtension } = await import("./navigation");
+const files = await import("./files");
+const { gotoTargets } = await import("./navigation");
 const { lspDoc } = await import("./lsp");
-const { useLspPopup, closePopup } = await import("./popupStore");
+const { useLspPopup, closePopup, openPopup } = await import("./popupStore");
 const { provideEditorService } = await import("@/workbench/contributions");
 const openFile = vi.fn(async () => {});
 provideEditorService({ openFile } as never);
@@ -40,22 +39,17 @@ let view: EditorView;
 beforeEach(() => {
   vi.useFakeTimers();
   openFile.mockClear();
-  lspGoto.mockClear();
-  indexGoto.mockClear();
-  indexGoto.mockResolvedValue({ status: "ok", data: null });
   view = new EditorView({
     state: EditorState.create({
       doc: "run()",
-      extensions: [
-        lspDoc.of({ doc: 1, path: "/p/main.rs", language: "rust", uiMode: "Rust", readOnly: false }),
-        navigationExtension(),
-      ],
+      extensions: [lspDoc.of({ doc: 1, path: "/p/main.rs", language: "rust", uiMode: "Rust", readOnly: false })],
     }),
     parent: document.body,
   });
 });
 afterEach(() => {
   view.destroy();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -84,33 +78,6 @@ describe("slow navigation feedback", () => {
     await pending;
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Server timed out");
     expect(openFile).not.toHaveBeenCalled();
-  });
-});
-
-describe("⌘-hover link probing", () => {
-  const target = { path: "/p/lib.rs", range: { start: { line: 3, col: 4 }, end: { line: 3, col: 7 } }, uri: null };
-  /** ⌘-hover over the word at `pos` (jsdom has no layout, so the position is stubbed). */
-  const hover = (pos = 0) => {
-    vi.spyOn(view, "posAtCoords").mockReturnValue(pos);
-    view.contentDOM.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, metaKey: true }));
-  };
-
-  it("underlines from the project index without a server round-trip", async () => {
-    indexGoto.mockResolvedValueOnce({ status: "ok", data: { targets: [target], note: "certain" } });
-    hover();
-    await vi.advanceTimersByTimeAsync(50);
-    expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("run");
-    expect(indexGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 0 }, "run");
-    expect(lspGoto).not.toHaveBeenCalled();
-  });
-
-  it("keeps probing the server when the index cannot answer", async () => {
-    lspGoto.mockResolvedValueOnce({ status: "ok", data: [] });
-    hover();
-    await vi.advanceTimersByTimeAsync(50);
-    expect(indexGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 0 }, "run");
-    expect(lspGoto).toHaveBeenCalledExactlyOnceWith(1, { line: 0, col: 0 }, "definition");
-    expect(view.dom.querySelector(".cm-lsp-link")).toBeNull();
   });
 });
 
@@ -176,6 +143,38 @@ describe("Go to Implementation while the search goes on", () => {
     await pending;
     expect(listPopup()).toBeNull();
     expect(document.querySelector(".cm-lsp-hint")).toBeNull();
+  });
+
+  it("does not let a superseded implementation search replace a newer popup", async () => {
+    const search = slowImplementations();
+    const pending = gotoTargets(view, "implementation");
+    await vi.waitFor(() => expect(lspGotoImplementation).toHaveBeenCalled());
+    search.first([at("/p/Own.java", 3)]);
+    await vi.waitFor(() => expect(listPopup()).not.toBeNull());
+    lspGoto.mockResolvedValueOnce({ status: "ok", data: [at("/p/New.java", 2)] });
+    await gotoTargets(view, "definition");
+    openPopup({ kind: "list", anchor: { x: 0, y: 0 }, title: "Newer popup", items: [] });
+    search.resolve({ status: "ok", data: [at("/p/Old.java", 8)] });
+    await pending;
+    expect(listPopup()?.title).toBe("Newer popup");
+  });
+
+  it("does not open a superseded chooser after its previews finish loading", async () => {
+    let finish!: (files: Map<string, string[]>) => void;
+    vi.spyOn(files, "readManyFileLines").mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    const search = slowImplementations();
+    const pending = gotoTargets(view, "implementation");
+    await vi.waitFor(() => expect(lspGotoImplementation).toHaveBeenCalled());
+    search.first([at("/p/Own.java", 3)]);
+    lspGoto.mockResolvedValueOnce({ status: "ok", data: [at("/p/New.java", 2)] });
+    await gotoTargets(view, "definition");
+    openPopup({ kind: "list", anchor: { x: 0, y: 0 }, title: "Newer popup", items: [] });
+    finish(new Map());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listPopup()?.title).toBe("Newer popup");
+    search.resolve({ status: "ok", data: [at("/p/Old.java", 8)] });
+    await pending;
+    expect(listPopup()?.title).toBe("Newer popup");
   });
 
   it("goes to the only implementation when none came first", async () => {
