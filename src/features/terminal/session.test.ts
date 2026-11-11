@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FIT_SETTLE_MS } from "./fit";
 import { findTerminalLinks, type TerminalLink } from "./links";
 import { openFileLink, resolveStartCwd, TerminalSession } from "./session";
+import { usePlatform } from "@/platform/platformInfo";
 
 const ipc = vi.hoisted(() => ({
   call: vi.fn(async (v: unknown) => v),
@@ -44,6 +45,37 @@ const fileLink = (text: string): Extract<TerminalLink, { kind: "file" }> => {
   if (!l || l.kind !== "file") throw new Error(`not a file link: ${text}`);
   return l;
 };
+
+describe("Windows PTY metadata", () => {
+  const initialPlatform = usePlatform.getState();
+  afterEach(() => usePlatform.setState(initialPlatform));
+
+  it.each([
+    ["windows", 19045, { backend: "conpty", buildNumber: 19045 }],
+    ["windows", 22631, { backend: "conpty", buildNumber: 22631 }],
+    ["windows", null, { backend: "conpty", buildNumber: undefined }],
+    ["macos", null, {}],
+    ["linux", null, {}],
+  ] as const)("configures %s build %s", (os, windowsBuildNumber, expected) => {
+    usePlatform.setState({ os, windowsBuildNumber });
+    const session = new TerminalSession({ key: "pty-options", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      expect(session.term.options.windowsPty).toEqual(expected);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("updates a restored terminal when platform info arrives and unsubscribes on disposal", () => {
+    usePlatform.setState({ os: "windows", windowsBuildNumber: null });
+    const session = new TerminalSession({ key: "restored", cwd: "/repo", onChange() {}, onFocus() {} });
+    usePlatform.setState({ windowsBuildNumber: 22631 });
+    expect(session.term.options.windowsPty).toEqual({ backend: "conpty", buildNumber: 22631 });
+    session.dispose();
+    usePlatform.setState({ windowsBuildNumber: 19045 });
+    expect(session.term.options.windowsPty).toEqual({ backend: "conpty", buildNumber: 22631 });
+  });
+});
 
 describe("openFileLink", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -242,6 +274,40 @@ describe("terminal font zoom", () => {
     unbindTerminals();
     localStorage.clear();
     useProject.setState({ settings: null });
+  });
+
+  const wheel = (host: HTMLElement, init: WheelEventInit) => {
+    const event = new WheelEvent("wheel", { bubbles: true, cancelable: true, ...init });
+    host.dispatchEvent(event);
+    return event;
+  };
+
+  it("changes the font size with Ctrl+wheel when the editor's wheel zoom is on", () => {
+    useProject.setState({
+      settings: { terminal: { useEditorFont: false, fontSize: 14 }, editor: { general: { wheelZoom: true } } },
+    } as never);
+    syncTerminalProject("/wheel-zoom");
+    const session = getSession(newTab("/wheel-zoom").session)!;
+    const up = wheel(session.host, { ctrlKey: true, deltaY: -100 });
+    expect(up.defaultPrevented).toBe(true);
+    expect(session.term.options.fontSize).toBe(15);
+    wheel(session.host, { metaKey: true, deltaY: 100 });
+    wheel(session.host, { ctrlKey: true, deltaY: 100 });
+    expect(session.term.options.fontSize).toBe(13);
+    const plain = wheel(session.host, { deltaY: -100 });
+    expect(plain.defaultPrevented).toBe(false);
+    expect(session.term.options.fontSize).toBe(13);
+    syncTerminalProject(null);
+  });
+
+  it("leaves Ctrl+wheel to the terminal when the editor's wheel zoom is off", () => {
+    useProject.setState({ settings: { terminal: { useEditorFont: false, fontSize: 14 } } } as never);
+    syncTerminalProject("/wheel-off");
+    const session = getSession(newTab("/wheel-off").session)!;
+    const event = wheel(session.host, { ctrlKey: true, deltaY: -100 });
+    expect(event.defaultPrevented).toBe(false);
+    expect(session.term.options.fontSize).toBe(14);
+    syncTerminalProject(null);
   });
 
   it("keeps the offset through settings, refit and moving splits; fresh splits and restores start at the base", () => {

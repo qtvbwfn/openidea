@@ -3,7 +3,7 @@
  * test runner) and run/debug/stop actions.
  */
 import { registerEditorContribution } from "@/editor/api";
-import { executeAction, getAction, registerActions } from "@/platform/actions";
+import { executeAction, executeActionOrThrow, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -13,9 +13,11 @@ import {
   menuGroupItems,
   useDebugRunSessions,
   notifications,
+  provideRunOutput,
   registerMenuGroup,
   registerOverlay,
   registerRunAnythingProvider,
+  registerRunConfigType,
   registerRunningProcessesProvider,
   registerServiceProvider,
   registerTitleItem,
@@ -51,6 +53,7 @@ import { compoundChildren } from "./configs";
 import { containerDebuggable, remoteDebugBlocked } from "./remote";
 import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
+import { junitType } from "./junitType";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { npmGutter } from "./npmGutter";
 import { runGutter } from "./runGutter";
@@ -67,6 +70,7 @@ import {
   setBeforeLaunchRunner,
   loadConfigs,
   failedTests,
+  baseConfigOf,
   onRunExited,
   rerunFailed,
   rerunSession,
@@ -79,12 +83,47 @@ import {
   startRun,
   startSampleOutput,
   stopSession,
+  subscribeOutput,
   trackRecentConfigurations,
   useRun,
   isLive,
 } from "./store";
+import { rerunFailedConfigs } from "./testing/rerun";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
+
+function trackFailedTestSelection(): () => void {
+  let signature = "";
+  let generation = 0;
+  const update = () => {
+    const state = useRun.getState();
+    const id =
+      (state.activeSession && failedTests(state.activeSession).length ? state.activeSession : null) ??
+      [...state.sessions].reverse().find((s) => failedTests(s.id).length > 0)?.id;
+    const session = state.sessions.find((s) => s.id === id);
+    const base = session && baseConfigOf(session);
+    const paths = id ? failedTests(id) : [];
+    const next = JSON.stringify([id, session?.status, base, paths]);
+    if (next === signature) return;
+    signature = next;
+    const request = ++generation;
+    setContext("run.canRerunFailed", false);
+    if (!session || isLive(session) || !base) return;
+    const selection = rerunFailedConfigs(base, paths);
+    if (selection instanceof Promise) {
+      void selection.then((configs) => {
+        if (request === generation) setContext("run.canRerunFailed", configs.length > 0);
+      });
+    } else setContext("run.canRerunFailed", selection.length > 0);
+  };
+  const stop = useRun.subscribe(update);
+  update();
+  return () => {
+    generation++;
+    stop();
+    setContext("run.canRerunFailed", false);
+  };
+}
 
 function hasProject() {
   return !!useProject.getState().project;
@@ -345,6 +384,7 @@ export function activate(): () => void {
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
     registerBuiltinTypes(),
+    registerRunConfigType(junitType),
     registerGoActions(),
     registerComposerInstall(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
@@ -383,14 +423,15 @@ export function activate(): () => void {
     activateStackTrace(),
     listenForApplicationDeactivation(),
     trackRecentConfigurations(),
+    trackFailedTestSelection(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),
     // A removed workspace member (or a closed project) takes its sessions,
     // temporary configurations and Services groups with it.
     // Only while the same project stays open: closing it tears its runs down separately.
     useProject.subscribe((s, prev) => {
       if (!s.project || s.project.root !== prev.project?.root) return;
-      const before = prev.project.workspace?.projects ?? [];
-      const after = s.project.workspace?.projects ?? [];
+      const before = prev.project.workspace?.projects ?? [prev.project.root];
+      const after = s.project.workspace?.projects ?? [s.project.root];
       for (const root of before) if (!after.includes(root)) void cleanupRemovedProject(root);
     }),
     registerEditorContribution({ id: "run.targets", order: 55, extensions: runGutter }),
@@ -563,14 +604,14 @@ export function activate(): () => void {
         title: "Rerun Failed Tests",
         category: "Run",
         icon: "rerun",
-        when: "projectOpen",
+        when: "projectOpen && run.canRerunFailed",
         keywords: ["failed tests", "rerun"],
-        run: () => {
+        run: async () => {
           const s = useRun.getState();
           const id =
             (s.activeSession && failedTests(s.activeSession).length ? s.activeSession : null) ??
             [...s.sessions].reverse().find((x) => failedTests(x.id).length > 0)?.id;
-          if (!id || !rerunFailed(id))
+          if (!id || !(await rerunFailed(id)))
             notifications().notify({
               group: "run",
               level: "info",
@@ -591,6 +632,28 @@ export function activate(): () => void {
         },
       },
       {
+        id: "run.pluginStart",
+        title: "Run Plugin Configuration",
+        category: "Run",
+        hidden: true,
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          const a = arg as {
+            config: import("@/bindings").RunConfig;
+            debug: boolean;
+            onExit: (code: number | null, stopped: boolean) => void;
+          };
+          if (a.debug) {
+            if (!getAction("debug.pluginStart")) throw new Error("Debugger unavailable");
+            await executeActionOrThrow("debug.pluginStart", a);
+            return;
+          }
+          const session = await startRun(a.config, undefined, undefined, { onExit: a.onExit });
+          if (!session || session.status === "failed") throw new Error("Run did not start");
+          if (session.runId === null && session.status === "finished") a.onExit(session.exitCode, !!session.stopped);
+        },
+      },
+      {
         id: "run.runConfig",
         title: "Run Configuration",
         category: "Run",
@@ -599,7 +662,16 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
-          if (config) await startRun(config);
+          if (!config) return;
+          // `{ config, onExit }`: told when the process exits, or right away when it didn't start.
+          const onExit = (arg as { onExit?: (code: number | null, stopped: boolean) => void } | null)?.onExit;
+          if (typeof onExit !== "function") {
+            await startRun(config);
+            return;
+          }
+          const session = await startRun(config, undefined, undefined, { onExit });
+          if (!session || session.status === "failed") onExit(null, false);
+          else if (session.runId === null && session.status === "finished") onExit(session.exitCode, !!session.stopped);
         },
       },
       {
@@ -650,6 +722,7 @@ export function activate(): () => void {
       },
     ]),
     onIdeEvent("runExited", (e) => onRunExited(e.run, e.code)),
+    onIdeEvent("projectRootsChanged", scheduleReload),
     // Lets other title items follow the selected configuration (e.g. Build shows only for compiled ones).
     useRun.subscribe((s) => {
       const selected = s.configs.find((c) => c.id === s.selectedId);
@@ -668,6 +741,8 @@ export function activate(): () => void {
 
   setBeforeLaunchRunner(runBeforeLaunch);
   disposers.push(() => setBeforeLaunchRunner(null));
+  provideRunOutput({ subscribe: subscribeOutput });
+  disposers.push(() => provideRunOutput(undefined));
   if (hasProject()) void loadConfigs();
 
   // Reload when run.toml or build files change on disk (cheap; detection is fast).
