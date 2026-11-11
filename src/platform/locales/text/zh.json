@@ -6941,5 +6941,10 @@
   "{entries} entries": "{entries} 项",
   "Copy MyBatis SQL": "复制 MyBatis SQL",
   "The selection has no MyBatis SQL log to convert": "所选内容中没有可转换的 MyBatis SQL 日志",
-  "Could not copy to the clipboard": "无法写入剪贴板"
+  "Could not copy to the clipboard": "无法写入剪贴板",
+  "Configuration Directory": "配置目录",
+  "Data directory: {dataDir}": "数据目录：{dataDir}",
+  "Reset to default": "恢复默认",
+  "Settings and data live under this directory.": "设置和数据存放在此目录下。",
+  "OPENIDEA_HOME is set and takes precedence over this setting.": "已设置 OPENIDEA_HOME，它优先于此项设置。"
 }

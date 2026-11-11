@@ -561,5 +561,10 @@
   "Show status bar": "Show status bar",
   "No background tasks": "No background tasks",
   "Status Bar Widgets": "Status Bar Widgets",
-  "Background Tasks": "Background Tasks"
+  "Background Tasks": "Background Tasks",
+  "Configuration Directory": "Configuration Directory",
+  "Data directory: {dataDir}": "Data directory: {dataDir}",
+  "Reset to default": "Reset to default",
+  "Settings and data live under this directory.": "Settings and data live under this directory.",
+  "OPENIDEA_HOME is set and takes precedence over this setting.": "OPENIDEA_HOME is set and takes precedence over this setting."
 }
