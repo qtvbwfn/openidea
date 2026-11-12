@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook } from "@testing-library/react";
 import type { RunConfig } from "@/platform/ipc";
-import { debugSession, resetRuns, useRun, type RunSession } from "./store";
+import {
+  debugSession,
+  isRunWindowSession,
+  resetRuns,
+  useRun,
+  useRunWindowRunningCount,
+  type RunSession,
+} from "./store";
 import { sessionIcon } from "./RunView";
 
 const actions = vi.hoisted(() => ({ executeAction: vi.fn() }));
@@ -78,5 +86,30 @@ describe("debugSession", () => {
   it("ignores unknown session ids", () => {
     debugSession("nope");
     expect(actions.executeAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("the Run window's badge", () => {
+  it("counts its own live sessions, not the ones the Services window started", () => {
+    const { result } = renderHook(() => useRunWindowRunningCount());
+    expect(result.current).toBeNull();
+    act(() => useRun.setState({ sessions: [session({ id: "a", status: "running" })] }));
+    expect(result.current).toBe(1);
+    act(() =>
+      useRun.setState({
+        sessions: [
+          session({ id: "a", status: "running" }),
+          session({ id: "b", status: "running", origin: "services" }),
+        ],
+      }),
+    );
+    expect(result.current).toBe(1);
+    act(() => useRun.setState({ sessions: [session({ id: "b", status: "running", origin: "services" })] }));
+    expect(result.current).toBeNull();
+  });
+
+  it("owns every session that did not start in the Services window", () => {
+    expect(isRunWindowSession(session())).toBe(true);
+    expect(isRunWindowSession(session({ origin: "services" }))).toBe(false);
   });
 });

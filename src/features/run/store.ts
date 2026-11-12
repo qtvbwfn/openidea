@@ -96,6 +96,16 @@ export interface RunSession {
   httpPort?: number;
 }
 
+/** Whether the Run tool window owns a session: runs the Services window started stay there. */
+export function isRunWindowSession(s: Pick<RunSession, "origin">): boolean {
+  return s.origin !== "services";
+}
+
+/** The Run window's badge count: its live sessions, `null` when none (the badge hides). */
+export function useRunWindowRunningCount(): number | null {
+  return useRun((s) => s.sessions.filter((x) => isLive(x) && isRunWindowSession(x)).length || null);
+}
+
 interface SessionRuntime {
   dotnetReports?: DotnetReports;
   resolveRequest?: { id: RequestId; controller: AbortController };

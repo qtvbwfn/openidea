@@ -31,6 +31,7 @@ import {
   writeTerminal,
   type RunSession,
   isLive,
+  isRunWindowSession,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
 import { TestTreeView, formatDuration } from "./TestTreeView";
@@ -266,20 +267,18 @@ export function SessionPanel({
 
 function sessionItems(sessions: readonly RunSession[], targets: readonly RunTargetValid[]): TabItem[] {
   // Runs started from the Services tool window live there (IDEA keeps them out of Run).
-  return sessions
-    .filter((s) => s.origin !== "services")
-    .map((s) => ({
-      id: s.id,
-      label: remoteLabel(s.config, targets),
-      text: remoteLabel(s.config, targets),
-      icon: sessionIcon(s),
-      color: failed(s) ? "var(--danger)" : undefined,
-      closable: true,
-      tooltip:
-        s.status === "finished"
-          ? tx`Finished in ${formatDuration((s.endedAt ?? s.startedAt) - s.startedAt)}, exit code ${s.exitCode ?? "?"}`
-          : undefined,
-    }));
+  return sessions.filter(isRunWindowSession).map((s) => ({
+    id: s.id,
+    label: remoteLabel(s.config, targets),
+    text: remoteLabel(s.config, targets),
+    icon: sessionIcon(s),
+    color: failed(s) ? "var(--danger)" : undefined,
+    closable: true,
+    tooltip:
+      s.status === "finished"
+        ? tx`Finished in ${formatDuration((s.endedAt ?? s.startedAt) - s.startedAt)}, exit code ${s.exitCode ?? "?"}`
+        : undefined,
+  }));
 }
 
 /** The selected tab: a run session or an analyzed stack trace (IDEA shows both in Run). */
@@ -289,7 +288,7 @@ function currentTab(
   active: string | null,
 ): { session: RunSession } | { trace: StackTraceTab } | null {
   // Runs started from the Services tool window live there (IDEA keeps them out of Run).
-  sessions = sessions.filter((s) => s.origin !== "services");
+  sessions = sessions.filter(isRunWindowSession);
   const session = sessions.find((s) => s.id === active);
   if (session) return { session };
   const trace = traces.find((t) => t.id === active);
