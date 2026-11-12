@@ -17,6 +17,7 @@ import {
   activate as vcs,
   activateComparisonWindow,
   activateDiffViewer,
+  activateDiffWindow,
   activateSettingsPages as vcsPages,
 } from "./vcs";
 import { activate as terminal } from "./terminal";
@@ -55,6 +56,7 @@ import { activate as agents, activateSettingsPages as agentsPages } from "./agen
 import { activate as vim, activateSettingsPages as vimPages } from "./vim";
 import { activate as ssh } from "./ssh";
 import { activate as remoteDev } from "./remote-dev";
+import { activate as whatsNew } from "./whats-new";
 
 type Activate = () => void | (() => void);
 
@@ -64,6 +66,7 @@ const features: Array<[string, Activate]> = [
   ["editor-lsp", editorLsp],
   ["mcp", mcp],
   ["app", app],
+  ["whats-new", whatsNew],
   ["welcome", welcome],
   ["project-tree", projectTree],
   ["search", search],
@@ -125,7 +128,7 @@ export function activateFeatures(): () => void {
 }
 
 export { SettingsWindow } from "./settings";
-export { ComparisonWindow } from "./vcs";
+export { ComparisonWindow, DiffWindow } from "./vcs";
 export { DeploymentWindow } from "./deployment";
 
 /**
@@ -140,6 +143,20 @@ export function activateComparisonWindowFeatures(parent: string): () => void {
     ["editor", editor],
     ["vcs", vcs],
     ["comparison", () => activateComparisonWindow(parent, (project) => confirmLeave(undefined, project))],
+  ]);
+}
+
+/**
+ * The diff window of project window `parent`: one file's diff, with Git and its own documents but
+ * no workbench.
+ */
+export function activateDiffWindowFeatures(parent: string): () => void {
+  return activateAll("diff window", [
+    ["locale", appLocale],
+    ["settings", activateRuntimeSettings],
+    ["menu", activateMenuBridge],
+    ["vcs", vcs],
+    ["diff", () => activateDiffWindow(parent)],
   ]);
 }
 

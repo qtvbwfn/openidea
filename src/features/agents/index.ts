@@ -23,6 +23,7 @@ import {
   AGENTS_GROUP,
   HOME_KIND,
   MCP_PAGE,
+  POLICY_PAGE,
   REGISTRY_PAGE,
   SESSION_KIND,
   TASK_DRAG,
@@ -31,12 +32,12 @@ import {
 } from "./model";
 import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
-import { connect, disconnect, openHome, useAgents } from "./store";
+import { closeActiveTask, closeAndNewTask, connect, disconnect, openHome, useAgents } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
 
-/** Settings › Agents › Coding Agents and Settings › Agents › Model Context Protocol (MCP) (also used by the Settings window). */
+/** Settings › Agents › Coding Agents and Settings › Agents › External MCP Servers (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
   const disposers = [
     registerSettingsPage({
@@ -50,14 +51,23 @@ export function activateSettingsPages(): () => void {
     }),
     registerSettingsPage({
       id: MCP_PAGE,
-      title: "Model Context Protocol (MCP)",
+      title: "External MCP Servers",
       group: AGENTS_GROUP,
       order: 475,
       keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
       component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
     }),
+    registerSettingsPage({
+      id: POLICY_PAGE,
+      title: "Command Execution Policy",
+      group: AGENTS_GROUP,
+      order: 490,
+      keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
+      projectScope: true,
+      component: lazyComponent(() => import("./AgentPolicyPage").then((m) => m.AgentPolicyPage)),
+    }),
   ];
-  return () => disposers.forEach((d) => d());
+  return () => disposers.reverse().forEach((d) => d());
 }
 
 export function activate(): () => void {
@@ -170,6 +180,26 @@ export function activate(): () => void {
         run: ({ arg }) => openHome(typeof arg === "string" ? arg : undefined),
       },
       {
+        id: "agents.closeTask",
+        title: "Close Agent Task",
+        description: "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.",
+        category: "Agents",
+        when: "projectOpen",
+        keywords: ["agent", "tab"],
+        run: async () => {
+          await closeActiveTask();
+        },
+      },
+      {
+        id: "agents.closeAndNewTask",
+        title: "Close and New Agent Task",
+        description: "Closes the agent task tab in the editor, then opens the New Task page.",
+        category: "Agents",
+        when: "projectOpen",
+        keywords: ["agent", "tab"],
+        run: () => closeAndNewTask(),
+      },
+      {
         id: "agents.addAgent",
         title: "More Agents…",
         description: "Opens Settings › Tools › Agents: installs, updates or removes agents from the ACP Registry.",
@@ -180,9 +210,9 @@ export function activate(): () => void {
       },
       {
         id: "agents.mcpServers",
-        title: "Model Context Protocol (MCP)…",
+        title: "External MCP Servers…",
         description:
-          "Opens Settings › Agents › Model Context Protocol (MCP): configures User and Workspace MCP servers.",
+          "Opens Settings › Agents › External MCP Servers: configures the User and Workspace MCP servers coding agents use.",
         category: "Agents",
         icon: "settings",
         keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],

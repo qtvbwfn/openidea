@@ -22,10 +22,13 @@ pub mod deploy;
 pub mod doc;
 pub mod docker;
 pub mod env;
+pub mod file_dialog;
 pub mod fonts;
 pub mod fs;
 pub mod github;
+pub mod heap;
 pub mod history;
+pub mod hotkeys;
 pub mod http;
 pub mod java;
 pub mod lsp;
@@ -37,6 +40,7 @@ pub mod plugin;
 pub mod profiler;
 pub mod refactor;
 pub mod run;
+pub mod scaffold;
 pub mod sdk;
 pub mod search;
 pub mod spell;
@@ -72,6 +76,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::migration_apply,
         app::migration_decline,
         app::app_info,
+        file_dialog::file_dialog_needs_gtk,
+        file_dialog::gtk_pick_paths,
         mcp::mcp_ui_ready,
         mcp::mcp_respond,
         mcp::mcp_server_status,
@@ -123,6 +129,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_providers,
         agent::agent_set_command,
         agent::agent_set_env,
+        agent::agent_custom_save,
+        agent::agent_custom_remove,
+        agent::agent_custom_import,
         agent::agent_registry_list,
         agent::agent_registry_install,
         agent::agent_registry_remove,
@@ -134,6 +143,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_commands,
         agent::agent_entries,
         agent::agent_create,
+        agent::agent_external_sessions,
+        agent::agent_import_session,
         agent::agent_prompt,
         agent::agent_unqueue,
         agent::agent_send_queued_now,
@@ -151,8 +162,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_changes,
         agent::agent_base_text,
         agent::agent_rollback_changes,
+        agent::agent_accept_changes,
         notebook::notebook_open,
         notebook::notebook_get,
+        notebook::notebook_cell_docs,
         notebook::notebook_edit,
         notebook::notebook_save,
         notebook::notebook_reload,
@@ -177,6 +190,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         fs::fs_copy_merge,
         fs::fs_compare_directories,
         fs::fs_read_text,
+        fs::fs_open_with_system,
         clipboard::clipboard_write_text,
         clipboard::clipboard_file_list,
         clipboard::clipboard_has_files,
@@ -193,6 +207,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         doc::doc_snapshot,
         doc::doc_ui_mode,
         doc::doc_set_encoding,
+        doc::doc_set_bom,
         doc::doc_set_line_ending,
         doc::doc_outline,
         doc::doc_folding,
@@ -212,12 +227,15 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         history::history_list_dir,
         history::history_put_label,
         history::history_restore,
+        hotkeys::system_probe_hotkeys,
         refactor::refactor_file_move_edits,
         refactor::refactor_file_move_text_edits,
         refactor::refactor_move_files,
         refactor::refactor_undo_file_move,
         refactor::refactor_can_undo_file_move,
         caches::caches_schedule_invalidation,
+        caches::caches_local_data_info,
+        caches::caches_set_local_data_dir,
         caches::app_restart,
         nav::index_status,
         nav::index_file_extensions,
@@ -388,6 +406,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         run::run_import_sources,
         run::run_import_configs,
         run::run_system_env,
+        run::run_env_files,
         run::run_start,
         run::run_stop,
         run::run_stdin,
@@ -415,6 +434,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         build::maven_exclude_dependency,
         build::maven_goto_declaration,
         build::build_run,
+        build::build_compile_file,
         java::java_resolve_launch,
         java::java_debug_server,
         java::java_build_workspace,
@@ -444,6 +464,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         tools::jdk_download_releases,
         tools::jdk_download_location,
         tools::jdk_download,
+        scaffold::scaffold_catalog,
+        scaffold::scaffold_options,
+        scaffold::scaffold_requirements,
+        scaffold::scaffold_create,
         sdk::sdk_detect,
         sdk::sdk_python_interpreter,
         sdk::sdk_python_effective,
@@ -463,6 +487,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::window_new,
         window::window_open_settings,
         window::window_open_comparison,
+        window::window_open_diff,
         window::window_open_deployment,
         window::window_cycle,
         window::window_toggle_fullscreen,
@@ -490,6 +515,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         window::app_update_status,
         window::app_update_announcement,
         window::app_install_update,
+        window::app_release_notes,
         debug::debug_exception_filters,
         debug::debug_set_exception_breakpoints,
         debug::debug_set_variable,
@@ -505,6 +531,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_free_port,
         debug::debug_listen_for_jvm,
         debug::debug_redefine_classes,
+        debug::debug_jvm_memory_classes,
+        debug::debug_jvm_memory_instances,
+        debug::debug_jvm_memory_fields,
+        debug::debug_jvm_memory_referrers,
         coverage::coverage_prepare,
         coverage::coverage_collect,
         coverage::coverage_import,
@@ -513,6 +543,15 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         web::web_open,
         profiler::profiler_prepare,
         profiler::profiler_collect,
+        profiler::profiler_gc_before_stop,
+        heap::debug_heap_capture,
+        heap::debug_heap_open,
+        heap::debug_heap_classes,
+        heap::debug_heap_dominators,
+        heap::debug_heap_path,
+        heap::debug_heap_compare,
+        heap::debug_heap_save,
+        heap::debug_heap_close,
         plugin::plugin_subscribe,
         plugin::plugin_list,
         plugin::plugin_set_enabled,
@@ -622,6 +661,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         http::http_curl,
         http::http_from_curl,
         http::http_environment_file,
+        http::http_variable_definitions,
         http::http_history,
         http::http_history_get,
         http::http_history_clear,
@@ -657,6 +697,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         deploy::remote_of,
         deploy::remote_delete,
         deploy::remote_mkdir,
+        deploy::remote_download_into,
         deploy::remote_rename,
         crate::remote_dev::remote_bootstrap_list,
         crate::remote_dev::remote_connect,

@@ -78,8 +78,17 @@ impl AppState {
         let fresh_target = !crate::paths::layout_has_data(&resolved.layout, &resolved.defaults);
         let config_dir = resolved.locations.config.clone();
         let data_dir = resolved.locations.data.clone();
-        // Machine-local caches (upstream's `app_local_data_dir`) follow the same layout.
-        let local_data_dir = crate::paths::local_data_dir(&resolved.layout, &resolved.defaults);
+        // Machine-local caches (upstream's `app_local_data_dir`): a directory chosen in
+        // Settings › System Settings › Caches or OPENIDEA_LOCAL_DATA_DIR wins; otherwise
+        // they follow this configuration base.
+        let identifier = app.config().identifier.clone();
+        let override_set = ide_host::data_dirs::stored_override(&identifier).is_some()
+            || std::env::var_os(ide_host::data_dirs::LOCAL_DATA_ENV).is_some_and(|v| !v.is_empty());
+        let local_data_dir = if override_set {
+            ide_host::data_dirs::startup_local_data_dir(&identifier).map_err(std::io::Error::other)?
+        } else {
+            crate::paths::local_data_dir(&resolved.layout, &resolved.defaults)
+        };
         std::fs::create_dir_all(&config_dir)?;
         std::fs::create_dir_all(&data_dir)?;
         if let Err(error) = std::fs::create_dir_all(&local_data_dir) {
@@ -88,6 +97,10 @@ impl AppState {
         tracing::info!(?data_dir, ?local_data_dir, "application data directories");
         // Saved git HTTPS credentials (askpass answers them silently).
         ide_ssh::git_creds::init(data_dir.join("git-credentials.json"));
+        // A newly chosen local-data directory from Settings › System Settings ›
+        // Caches: the previous tree moves first, so a pending invalidation still
+        // wipes what was just moved.
+        ide_host::data_dirs::apply_custom_migration(&identifier, &local_data_dir);
         // File › Invalidate Caches… requested at the last run.
         let removed = ide_workspace::caches::apply_pending(&data_dir, &local_data_dir);
         if !removed.is_empty() {

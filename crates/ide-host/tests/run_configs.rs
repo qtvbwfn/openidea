@@ -210,3 +210,22 @@ async fn colliding_configuration_names_are_prefixed_with_the_member() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn debug_env_files_load_in_order_like_a_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = host(tmp.path());
+    let first = tmp.path().join("first.env");
+    let second = tmp.path().join("second.env");
+    std::fs::write(&first, "SHARED=one\nONLY_FIRST=1\nREF=${SHARED}-suffix\n").unwrap();
+    std::fs::write(&second, "SHARED=two\nONLY_SECOND=2\n").unwrap();
+    let vars = ops::run::run_env_files(&host, "main", vec![first, second]).unwrap();
+    // Later files win; references resolve against earlier files, then the system environment.
+    assert_eq!(vars.get("SHARED").map(String::as_str), Some("two"));
+    assert_eq!(vars.get("ONLY_FIRST").map(String::as_str), Some("1"));
+    assert_eq!(vars.get("ONLY_SECOND").map(String::as_str), Some("2"));
+    assert_eq!(vars.get("REF").map(String::as_str), Some("one-suffix"));
+    // An unreadable file is an error, like a run that names a missing `.env`.
+    let missing = ops::run::run_env_files(&host, "main", vec![tmp.path().join("nope.env")]);
+    assert!(missing.is_err(), "{missing:?}");
+}
