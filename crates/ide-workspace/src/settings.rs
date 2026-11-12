@@ -619,6 +619,22 @@ mod tests {
     }
 
     #[test]
+    fn set_console_log_colors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let store = SettingsStore::load(&cfg, Some(&proj));
+
+        let s = store.set(SettingsScope::Global, "console.logColors.error", json!("#ff0000")).unwrap();
+        assert_eq!(s.console.log_colors.error, "#ff0000");
+        assert!(s.console.log_colors.enabled);
+        let s = store.set(SettingsScope::Global, "console.logColors.enabled", json!(false)).unwrap();
+        assert!(!s.console.log_colors.enabled);
+        assert_eq!(s.console.log_colors.error, "#ff0000");
+    }
+
+    #[test]
     fn system_locale_maps_to_a_ui_locale() {
         for (tag, locale) in [
             (None, "en"),
