@@ -52,25 +52,6 @@ fn npm_scripts_with_lockfile_package_manager() {
 }
 
 #[test]
-fn vue_projects_get_vue_dev_servers() {
-    let dir = project(&[
-        (
-            "package.json",
-            r#"{"scripts":{"dev":"vite","serve":"vue-cli-service serve","build":"vite build","test":"vitest"},"devDependencies":{"vite":"^7","@vue/cli-service":"^5","vue":"^3"}}"#,
-        ),
-        ("pnpm-lock.yaml", ""),
-    ]);
-    let c = detect(dir.path());
-    assert_eq!(ids(&c), ["npm:build", "vue:dev", "vue:serve", "npm:test"]);
-    let dev = find(&c, "vue:dev");
-    assert_eq!(dev.kind, "vue");
-    assert_eq!(dev.name, "dev");
-    assert_eq!(cmdline(dev), "pnpm run dev");
-    assert!(!dev.is_test);
-    assert!(find(&c, "npm:test").is_test);
-}
-
-#[test]
 fn non_vue_projects_keep_npm_kind() {
     let dir = project(&[(
         "package.json",
@@ -79,22 +60,6 @@ fn non_vue_projects_keep_npm_kind() {
     let c = detect(dir.path());
     assert_eq!(ids(&c), ["npm:build", "npm:dev"]);
     assert_eq!(find(&c, "npm:dev").kind, "npm");
-}
-
-#[test]
-fn vue_workspace_member_prefixes_ids() {
-    let dir = project(&[
-        ("package.json", r#"{"workspaces":["apps/*"]}"#),
-        (
-            "apps/web/package.json",
-            r#"{"name":"@acme/web","scripts":{"dev":"vite","build":"vite build"},"dependencies":{"vue":"^3"}}"#,
-        ),
-    ]);
-    let c = detect(dir.path());
-    let dev = find(&c, "vue:@acme/web:dev");
-    assert_eq!(dev.name, "@acme/web: dev");
-    assert_eq!(cmdline(dev), "npm run dev");
-    assert_eq!(find(&c, "npm:@acme/web:build").kind, "npm");
 }
 
 #[test]

@@ -621,7 +621,10 @@ printf '#!/bin/sh\necho "$GEM_HOME"\n' > "$bin/solargraph"; /bin/chmod +x "$bin/
     let wrapper = env.root.join("solargraph/bin/solargraph");
     assert_eq!(info.path.as_deref(), Some(wrapper.as_path()));
     let out = std::process::Command::new(&wrapper).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), env.root.join("solargraph/gems").to_string_lossy());
+    // The fork's launchers address GEM_HOME relative to their own directory
+    // (relocatable tools home, 9df7f50e): resolve before comparing.
+    let got = std::fs::canonicalize(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    assert_eq!(got, std::fs::canonicalize(env.root.join("solargraph/gems")).unwrap());
 }
 
 #[cfg(unix)]
@@ -694,7 +697,23 @@ exit 0"#,
     let wrapper = env.root.join("csharp-ls/bin/csharp-ls");
     assert_eq!(info.path.as_deref(), Some(wrapper.as_path()));
     let out = std::process::Command::new(&wrapper).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/opt/dotnet");
+    // The fork's launchers address their target relatively (9df7f50e); fold the
+    // `bin/../…` hops lexically (the system target need not exist).
+    let folded = {
+        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let mut parts: Vec<&str> = Vec::new();
+        for seg in printed.split('/') {
+            match seg {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                s => parts.push(s),
+            }
+        }
+        format!("/{}", parts.join("/"))
+    };
+    assert_eq!(folded, "/opt/dotnet");
 }
 
 #[test]
