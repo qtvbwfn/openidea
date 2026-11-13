@@ -2637,7 +2637,6 @@ version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "337d46834ee672ab3e48caca2cb0c78cc174fb12b3a68d0d88f99a0519a5e36e"
 dependencies = [
- "generic-array 0.14.7",
  "rustversion",
  "typenum",
 ]
@@ -4295,18 +4294,22 @@ dependencies = [
 name = "ide-db"
 version = "0.1.43"
 dependencies = [
+ "base64 0.22.1",
  "bb8",
  "blake3",
  "dirs 6.0.0",
  "dunce",
+ "flate2",
  "futures",
  "ide-core",
  "ide-http",
  "ide-ssh",
  "notify",
+ "open",
  "oracledb",
  "parking_lot",
  "reqwest",
+ "rsa",
  "rustls",
  "serde",
  "serde_json",
@@ -4320,6 +4323,7 @@ dependencies = [
  "toml_edit 0.25.17+spec-1.1.0",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -4444,6 +4448,7 @@ dependencies = [
  "ide-tools",
  "ide-vcs",
  "ide-vfs",
+ "ide-web",
  "ide-workspace",
  "ignore",
  "jsonschema",
@@ -4603,6 +4608,7 @@ dependencies = [
  "tree-sitter-nix",
  "tree-sitter-ocaml",
  "tree-sitter-php",
+ "tree-sitter-prisma-io",
  "tree-sitter-proto",
  "tree-sitter-python",
  "tree-sitter-ruby",
@@ -4728,6 +4734,7 @@ name = "ide-remote"
 version = "0.1.43"
 dependencies = [
  "dunce",
+ "futures",
  "globset",
  "ide-core",
  "ide-run",
@@ -7715,9 +7722,9 @@ dependencies = [
 
 [[package]]
 name = "russh"
-version = "0.64.1"
+version = "0.65.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba61e87b9ec9a39a59a6bbed4c0b8ff7fb07073405b24a767a1f2c8560ac8f58"
+checksum = "94be3d86c71b9ed220a675c405e35c7a02565a009bf8da2e9cc13a700320a5c5"
 dependencies = [
  "aes",
  "bitflags 2.13.2",
@@ -10445,6 +10452,16 @@ name = "tree-sitter-php"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9779e392d38af4254f48be0e57b7eed4d50ec7a6e55a7e5e2e74df8f8f032d3"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-prisma-io"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c35912d65a6adb07f781db46d843bf0464935e267da6ed192705516adafc7c24"
 dependencies = [
  "cc",
  "tree-sitter-language",

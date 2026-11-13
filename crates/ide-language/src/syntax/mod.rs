@@ -13,6 +13,7 @@ mod outline;
 mod rst;
 mod selection;
 mod sfc;
+mod vue;
 mod web;
 
 use crate::{CodeOccurrence, Facts, FoldRange, LanguageConfig, LanguageRegistry, ScriptRegion, SymbolTag};
@@ -29,6 +30,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use tree_sitter::{Language, Parser, Tree};
+pub use vue::{VueComponentImport, VueRefAccess, VueRefElement};
 pub use web::{CSS_CLASS, CSS_ID, CSS_VARIABLE, FileReference, WebReference, WebReferenceKind};
 
 /// Texts larger than this are not parsed (minified bundles, generated dumps).

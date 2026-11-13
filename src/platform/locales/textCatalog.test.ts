@@ -189,6 +189,7 @@ const UNTRANSLATED = new Set<string>([
   "npx",
   "OpenIDEA",
   "Oracle",
+  "Snowflake",
   "Spring",
   "Spring Boot",
   "PostgreSQL",
