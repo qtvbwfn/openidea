@@ -7527,7 +7527,7 @@
   "(no method)": "（无方法）",
   "All methods already have statements": "所有方法都已有语句",
   "Based on project index (language server not ready)": "基于项目索引（语言服务器尚未就绪）",
-  "Bun's inspector speaks the WebKit Inspector protocol, which the JavaScript debugger (vscode-js-debug) can't attach to. Run it with `bun --inspect` and open the printed debug.bun.sh link, or debug the file with Node.js or Deno.": "Bun 的 inspector 使用 WebKit Inspector 协议，JavaScript 调试器（vscode-js-debug）无法附加。请用 `bun --inspect` 运行并打开打印出的 debug.bun.sh 链接，或改用 Node.js 或 Deno 调试该文件。",
+  "Bun's inspector speaks the WebKit Inspector protocol, which the JavaScript debugger (vscode-js-debug) can't attach to. Use the bun-dap debugger, or run it with `bun --inspect` and open the printed debug.bun.sh link.": "Bun 的 inspector 使用 WebKit Inspector 协议，JavaScript 调试器（vscode-js-debug）无法附加。请改用 bun-dap 调试器，或用 `bun --inspect` 运行并打开打印出的 debug.bun.sh 链接。",
   "Cannot list processes": "无法列出进程",
   "Choose MyBatis Statement": "选择 MyBatis 语句",
   "Create Mapper XML": "创建 Mapper XML",
