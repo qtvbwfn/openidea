@@ -134,7 +134,6 @@ impl AppState {
                 &crate::paths::plugins_dir(&resolved.layout, &resolved.locations),
                 &host,
             )?,
-            web: ide_web::WebServer::new(),
             mcp: Default::default(),
             remote_dev: crate::remote_dev::Connections::default(),
             host,

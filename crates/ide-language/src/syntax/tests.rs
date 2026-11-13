@@ -759,7 +759,6 @@ fn outline_html_css_xml() {
           Field body
             Field div
             Field script
-        Variable a
               Variable a
         ",
     );
@@ -1500,6 +1499,7 @@ fn script_regions_pick_the_lang_attribute() {
     let regions = syntax().script_regions(&lang("vue"), src);
     assert_eq!(regions.len(), 1);
     assert_eq!(regions[0].language.as_str(), "tsx");
+    assert!(regions[0].text.contains("const App"));
 }
 
 #[test]
@@ -1541,14 +1541,15 @@ fn script_occurrences_cover_identifiers_and_component_tags() {
 fn outline_of_a_vue_sfc_gains_the_script_declarations() {
     let src = "<template>\n  <div/>\n</template>\n<script setup lang=\"ts\">\nimport { ref } from 'vue'\nconst user = ref(null)\nfunction load() {}\n</script>\n";
     let items = syntax().outline(&lang("vue"), src);
-    let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+    // The script's declarations nest under its `script` entry, in document coordinates.
+    let script = items.iter().find(|i| i.name == "script").unwrap();
+    let names: Vec<&str> = script.children.iter().map(|i| i.name.as_str()).collect();
     assert!(names.contains(&"user") && names.contains(&"load"), "{names:?}");
-    // Document order: the declarations sit after the (empty) markup outline.
+    // Markup entries stay in document order.
     assert!(items.iter().is_sorted_by_key(|i| i.selection_range.start.line));
-    let load = items.iter().find(|i| i.name == "load").unwrap();
+    let load = script.children.iter().find(|i| i.name == "load").unwrap();
     assert_eq!(load.kind, SymbolKind::Function);
     assert_eq!(load.selection_range.start.line, 6);
-    assert!(regions[0].text.contains("const App"));
 }
 
 #[test]

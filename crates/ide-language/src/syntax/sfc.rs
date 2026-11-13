@@ -18,7 +18,7 @@ fn lang_grammar(value: &str) -> Option<&'static str> {
     match value {
         "ts" | "typescript" => Some("typescript"),
         "tsx" => Some("tsx"),
-        "" | "js" | "javascript" => Some("javascript"),
+        "" | "js" | "jsx" | "javascript" => Some("javascript"),
         _ => None,
     }
 }
@@ -50,12 +50,13 @@ pub(crate) fn script_regions(tree: &Tree, text: &str) -> Vec<ScriptRegion> {
                             continue;
                         }
                         let (name, value) = attribute(attr, text);
-                        match name {
-                            "lang" => match lang_grammar(&value) {
+                        match name.to_ascii_lowercase().as_str() {
+                            "lang" => match lang_grammar(&value.to_ascii_lowercase()) {
                                 Some(g) => lang = g,
                                 None => skip = true,
                             },
-                            "type" if !is_js_type(&value) => skip = true,
+                            "type" if !is_js_type(&value.trim().to_ascii_lowercase()) => skip = true,
+                            "src" => skip = true,
                             _ => {}
                         }
                     }
@@ -164,6 +165,8 @@ fn attribute<'t>(attr: Node<'t>, text: &'t str) -> (&'t str, String) {
                 let v = ch.utf8_text(text.as_bytes()).unwrap_or("");
                 value = v.trim_matches(|q| q == '"' || q == '\'').to_string();
             }
+            // An unquoted value: `lang=ts`.
+            "attribute_value" => value = ch.utf8_text(text.as_bytes()).unwrap_or("").to_string(),
             _ => {}
         }
     }

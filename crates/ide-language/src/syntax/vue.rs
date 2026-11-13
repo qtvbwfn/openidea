@@ -128,7 +128,7 @@ impl Syntax {
         let regions = if lang.as_str() == "vue" {
             self.script_regions(lang, text)
         } else {
-            vec![ScriptRegion { base: 0, language: lang.clone(), text: text.to_owned() }]
+            vec![ScriptRegion { base: 0, base_line: 0, base_col: 0, language: lang.clone(), text: text.to_owned() }]
         };
         let idx = LineIndex::new(text);
         regions.into_iter().find_map(|region| {
