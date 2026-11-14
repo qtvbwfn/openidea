@@ -8,6 +8,16 @@ vi.mock("@/platform/ipc", async (importOriginal) => ({
   call: ipc.call,
 }));
 
+// A command starts its raw IPC call when constructed, before the mocked `call`
+// sees it: stub `invoke` with a promise that never settles so the Test
+// Connection clicks this test fires produce no unhandled rejections.
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(() => new Promise(() => {})),
+  Channel: class {
+    onmessage: (p: unknown) => void = () => {};
+  },
+}));
+
 const savePassword = () => screen.getByRole("checkbox", { name: "Save password" }) as HTMLInputElement;
 
 describe("new data source", () => {
