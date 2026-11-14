@@ -35,7 +35,11 @@ describe("html bodies in the app", () => {
         "*",
       );
     });
-    const doc = (post.mock.calls[0]![0] as { document: string }).document;
+    // The frame may receive other messages before (or between) the document post:
+    // pick the plugin document itself instead of assuming it is the first call.
+    const doc = post.mock.calls
+      .map((c) => (c[0] ?? {}) as { document?: string })
+      .find((p) => typeof p.document === "string" && p.document.includes("<p>chart</p>"))?.document;
     expect(doc).toContain('<meta http-equiv="Content-Security-Policy"');
     expect(doc).toContain("window.openidea");
 
