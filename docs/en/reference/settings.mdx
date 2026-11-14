@@ -18,7 +18,9 @@ Settings are combined from three layers, each overriding the one before:
 
 A file holds only the values that differ from the layer below. Tables merge key by key; a value or array in a higher layer replaces the lower one entirely (for example, setting `files.exclude` in a project replaces the global list).
 
-Some settings are ignored in the project file: `mcpServer` and imported color schemes (`editor.customSchemes`) are global only. Project trust is never read from settings.
+Some settings are ignored in the project file: `mcpServer`, imported color schemes (`editor.customSchemes`) and `agents.newTaskApprovals` are global only. Project trust is never read from settings.
+
+A project file can't loosen what coding agents may do: `agentSecurity.allowedCommands` and `agents.defaults` are global only, and `agentSecurity.blockedCommands` in a project adds to the global list rather than replacing it. An MCP server in the project's `agents.mcpServers` stays off until you turn it on in **Settings › Agents › External MCP Servers**, and again after its definition changes.
 
 ## File format
 
@@ -107,6 +109,7 @@ Settings › Appearance & Behavior › Appearance, unless noted.
 | `uiFontFallback`                             | `""`                 | **UI fallback font**.                                                                                                                                                 |
 | `contrastScrollbars`                         | `false`              | **Use contrast scrollbars**.                                                                                                                                          |
 | `redGreenVision`                             | `false`              | **Adjust colors for red-green vision deficiency**.                                                                                                                    |
+| `backgroundImage`                            | `opacity: 15`        | **Background Image**: `path` (empty: none), `opacity` (0–100), `fill` (`scale` / `plain` / `tile`), `anchor` (`center`, `top-left`, …).                               |
 | `compactMode`                                | `false`              | **Compact mode**.                                                                                                                                                     |
 | `showMainToolbar` / `showStatusBar`          | `true` / `true`      | **Show main toolbar**, **Show status bar**.                                                                                                                           |
 | `navigationBar`                              | `"statusBar"`        | **Navigation bar**: `top`, `statusBar` or `hidden`.                                                                                                                   |

@@ -257,6 +257,11 @@ describe("catalogs", () => {
   const SAME_AS_ENGLISH = new Set([
     "if",
     "log",
+    "4096 MB",
+    "6144 MB",
+    "8192 MB",
+    "12288 MB",
+    "16384 MB",
     "Docker",
     "JUnit",
     "⌘Enter",
@@ -266,6 +271,7 @@ describe("catalogs", () => {
     "my-agent",
     "Java",
     "Python",
+    "Python {short}",
     "C/C++",
     "C#",
     "Go",
@@ -290,6 +296,8 @@ describe("catalogs", () => {
     "f-string",
     "Tailwind CSS",
     "Bun",
+    "Deno",
+    "Node.js",
     "bun-dap (Bun)",
   ]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();

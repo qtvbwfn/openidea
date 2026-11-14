@@ -47,12 +47,14 @@ import { caretExtension, fontZoom, methodLinesField, prefsExtension, softWrapAct
 import { commentTokens } from "./languages";
 import { multiCaretMouse } from "./multiCaret";
 import { columnModeExtension } from "./columnMode";
+import { bracketBlockSelect } from "./bracketBlockSelect";
 import { visibleGoalColumns } from "./verticalMotion";
 import { tabKeymap } from "./smartKeys";
 import { editorBaseKeymap } from "./baseKeymap";
 import { occurrenceSearch } from "./editing";
 import { gutterLineDrag } from "./gutterDrag";
 import { overwriteField } from "./overwrite";
+import { relativeLineNumbers } from "./relativeLineNumbers";
 import { clipboardDocumentPath, clipboardFilesExtension } from "./clipboard";
 import { clipboardHistoryExtension } from "../clipboardHistory";
 import type { LanguageInfo } from "../backend";
@@ -243,7 +245,11 @@ export function heavyExtension(docLength: number, settings?: EditorSettings): Ex
 }
 
 export function lineNumbersExtension(settings: EditorSettings | undefined): Extension {
-  return prefsOf(settings).appearance.lineNumbers && !isDistractionFree() ? lineNumbers() : [];
+  const a = prefsOf(settings).appearance;
+  if (!a.lineNumbers || isDistractionFree()) return [];
+  return a.lineNumberMode === "relative" || a.lineNumberMode === "hybrid"
+    ? relativeLineNumbers(a.lineNumberMode === "hybrid")
+    : lineNumbers();
 }
 
 /**
@@ -371,6 +377,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     EditorState.allowMultipleSelections.of(true),
     multiCaretMouse,
     columnModeExtension,
+    bracketBlockSelect,
     visibleGoalColumns,
     occurrenceSearch,
     overwriteField,
