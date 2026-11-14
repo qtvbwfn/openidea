@@ -1136,7 +1136,15 @@ pub(crate) fn stash_push(
     paths: &[PathBuf],
 ) -> IdeResult<()> {
     let rel = r.rel_paths(paths)?;
-    let mut args = vec!["--literal-pathspecs", "stash", "push", "-q"];
+    // `--literal-pathspecs` only guards the pathspec arguments; passing it with no
+    // pathspec trips a git 2.50 quirk where `stash push --include-untracked` records
+    // the untracked files but leaves them in the working tree. Add it only when the
+    // caller actually scoped the stash to selected files.
+    let mut args: Vec<&str> = Vec::new();
+    if !rel.is_empty() {
+        args.push("--literal-pathspecs");
+    }
+    args.extend(["stash", "push", "-q"]);
     if include_untracked {
         args.push("--include-untracked");
     }
