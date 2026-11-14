@@ -3,7 +3,7 @@
 
 use crate::discover::{project_venv_python, workspace_tsdk};
 use crate::exec::{path_with, search_path, which};
-use crate::npm::{has_ts_api, own_typescript};
+use crate::npm::{has_ts_api, native_typescript, own_typescript};
 use crate::{angular, astro, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
 use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, Settings};
@@ -323,11 +323,38 @@ fn resolve_gradle_command(root: &Path, build_dir: &Path, s: &Settings, use_wrapp
     }
     let wrapper = build_dir.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
     if use_wrapper && wrapper.is_file() {
+        // `gradlew` can't start without its jar, which `.gitignore`s with `*.jar` often leave
+        // out: run the distribution the wrapper already unpacked instead.
+        if build_dir.join("gradle/wrapper/gradle-wrapper.jar").is_file() {
+            return wrapper;
+        }
+        let home = setting_path(root, &g.user_home)
+            .or_else(|| std::env::var_os("GRADLE_USER_HOME").map(PathBuf::from))
+            .or_else(|| Some(crate::home_dir()?.join(".gradle")));
+        if let Some(gradle) = home.and_then(|home| unpacked_wrapper_distribution(build_dir, &home)) {
+            return gradle;
+        }
+        // Nothing to run instead: the wrapper's failure explains what is missing.
         return wrapper;
     }
     pinned::pinned_install(build_dir, Tool::Gradle)
         .map(|(home, _)| home.join("bin").join(name))
         .unwrap_or_else(|| name.into())
+}
+
+/// `bin/gradle` of the distribution `gradle/wrapper/gradle-wrapper.properties` names, once the
+/// wrapper has unpacked it in `<gradle_user_home>/wrapper/dists` (and marked it complete).
+fn unpacked_wrapper_distribution(build_dir: &Path, gradle_user_home: &Path) -> Option<PathBuf> {
+    let properties = std::fs::read_to_string(build_dir.join("gradle/wrapper/gradle-wrapper.properties")).ok()?;
+    let url = properties.lines().find_map(|line| line.trim().strip_prefix("distributionUrl="))?;
+    let zip = url.trim().replace("\\:", ":").rsplit('/').next()?.to_owned();
+    let name = zip.strip_suffix(".zip")?;
+    let gradle = if cfg!(windows) { "gradle.bat" } else { "gradle" };
+    // One directory per distribution URL hash, each holding the unpacked `gradle-<version>`.
+    let hashes = std::fs::read_dir(gradle_user_home.join("wrapper/dists").join(name)).ok()?;
+    hashes.flatten().map(|e| e.path()).filter(|dir| dir.join(format!("{zip}.ok")).is_file()).find_map(|dir| {
+        std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path().join("bin").join(gradle)).find(|p| p.is_file())
+    })
 }
 
 fn gradle_run_jdk<'a>(
@@ -348,6 +375,11 @@ fn gradle_run_jdk<'a>(
             .or_else(|| compatible.iter().copied().filter(|jdk| jdk.major > release).min_by_key(|jdk| jdk.major))
             .or_else(|| compatible.iter().copied().max_by_key(|jdk| jdk.major))
     })
+}
+
+/// The newest installed JDK that Gradle `gradle` runs on.
+fn newest_gradle_jdk(gradle: (u32, u32), installed: &[crate::java::Jdk]) -> Option<&crate::java::Jdk> {
+    installed.iter().filter(|jdk| gradle_supports_java(gradle, jdk.major)).max_by_key(|jdk| jdk.major)
 }
 
 /// Default environment shared by Gradle model builds and Run configurations.
@@ -466,7 +498,17 @@ pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, bui
         .any(|f| build_dir.join(f).is_file());
     let env = if gradle_build {
         let command = gradle_command(root, build_dir, s);
-        gradle_build_env(root, build_dir, &command.to_string_lossy(), s, None)
+        let command = command.to_string_lossy();
+        let mut env = gradle_build_env(root, build_dir, &command, s, None);
+        // No Project JDK and no Java version the build declares: jdtls would import on its own
+        // runtime, which an older Gradle cannot run on. Use an installed JDK this Gradle supports.
+        if !env.contains_key("JAVA_HOME")
+            && let Some(gradle) = gradle_distribution_version(build_dir, &command)
+            && let Some(jdk) = newest_gradle_jdk(gradle, &crate::java::installed_jdks())
+        {
+            env.insert("JAVA_HOME".into(), jdk.home.to_string_lossy().into_owned());
+        }
+        env
     } else {
         gradle_env(root, s, Default::default())
     };
@@ -677,6 +719,16 @@ pub fn tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
             let p = setting_path(root, custom)?;
             Some(if p.extension().is_some_and(|e| e == "js") { p.parent()?.to_path_buf() } else { p })
         }
+    }
+}
+
+/// TypeScript 7's native executable when the selected TypeScript is one (see
+/// [`native_typescript`]); `None` for the bundled one and TypeScript 6 and older.
+pub fn native_tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
+    match s.languages.typescript.version.trim() {
+        "" | "bundled" => None,
+        "workspace" => native_typescript(&root.join("node_modules/typescript")),
+        custom => native_typescript(&setting_path(root, custom)?),
     }
 }
 
@@ -915,10 +967,15 @@ pub fn resolve_run_command(config: &mut RunConfig, root: &Path, s: &Settings) {
 }
 
 pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
+    let mut path_dirs: Vec<PathBuf> = Vec::new();
     if let Some(custom) = tool_command(root, s, &cfg.command) {
+        // An executable chosen from a Node.js installation (`~/.nvm/versions/node/v26/bin/tsc`,
+        // its `npx`) runs on that Node: its `#!/usr/bin/env node` finds the `node` beside it.
+        if let Some(bin) = custom.parent().filter(|bin| bin.join(exe("node")).is_file()) {
+            path_dirs.push(bin.to_path_buf());
+        }
         cfg.command = custom.to_string_lossy().into_owned();
     }
-    let mut path_dirs: Vec<PathBuf> = Vec::new();
     let name = cfg.name.clone();
     let name = name.as_str();
 
@@ -1093,6 +1150,16 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
             _ => {}
         }
     }
+    // TypeScript 7 serves LSP itself: it replaces the tsserver-based server.
+    if matches!(name, "vtsls" | "typescript-language-server")
+        && let Some(native) = native_tsdk(server_root, s).or_else(|| native_tsdk(root, s))
+    {
+        cfg.command = native.to_string_lossy().into_owned();
+        cfg.args = vec!["--lsp".into(), "--stdio".into()];
+        cfg.initialization_options = None;
+        cfg.tsserver_project = false;
+        return;
+    }
     let vue_command = s.tool_path(vue::SERVER).and_then(|p| setting_path(root, p));
     let vue_command = vue_command.as_deref().map_or(vue::SERVER.into(), Path::to_string_lossy);
     if name == "vtsls"
@@ -1101,6 +1168,22 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         let plugin = vue::tsserver_plugin(&vue);
         merge_init_options(cfg, json!({ "vtsls": { "tsserver": { "globalPlugins": [plugin] } } }));
         cfg.tsserver_project_extras.extensions = vec![vue::EXTENSION.into()];
+        // Hybrid mode: one program holds every .vue's virtual TypeScript, so the
+        // heap must clear it (vtsls' default 3072 dies in a GC death spiral), and
+        // the syntax tsserver duplicates the plugin and its file watching.
+        merge_init_options(
+            cfg,
+            json!({ "typescript": { "tsserver": { "useSyntaxServer": "never", "maxTsServerMemory": 8192 } } }),
+        );
+        // A configured project resolves its own types; the typings installer only
+        // serves inferred projects and keeps scanning npm in the background.
+        if server_root.ancestors().any(|d| d.join("tsconfig.json").is_file() || d.join("jsconfig.json").is_file()) {
+            merge_init_options(cfg, json!({ "typescript": { "disableAutomaticTypeAcquisition": true } }));
+        }
+    }
+    let memory = s.languages.typescript.tsserver_max_memory;
+    if name == "vtsls" && memory > 0 {
+        merge_init_options(cfg, json!({ "typescript": { "tsserver": { "maxTsServerMemory": memory } } }));
     }
     if name == "vtsls"
         && cfg.tsserver_project
@@ -1620,6 +1703,17 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
                     path_dirs.push(bin);
                 }
             }
+            // JAR Application's default JRE is the project JDK; a chosen JRE is an absolute `java`.
+            "jar-application" => {
+                if let Some(jdk) = &jdk
+                    && c.command == "java"
+                {
+                    let java = crate::java::java_executable(&jdk.home);
+                    if java.is_file() {
+                        c.command = java.to_string_lossy().into_owned();
+                    }
+                }
+            }
             "tomcat" => {
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
@@ -1990,6 +2084,11 @@ mod gradle_runtime_tests {
         assert_eq!(gradle_run_jdk(Some(21), None, &installed, None).unwrap().major, 21);
         assert_eq!(gradle_run_jdk(Some(19), None, &installed, None).unwrap().major, 21);
         assert!(gradle_run_jdk(None, None, &installed, None).is_none());
+        // The Java import of a build that declares no Java version still needs a JVM its Gradle runs on.
+        assert_eq!(newest_gradle_jdk((8, 4), &installed).unwrap().major, 17);
+        assert_eq!(newest_gradle_jdk((7, 2), &installed).unwrap().major, 11);
+        assert_eq!(newest_gradle_jdk((9, 1), &installed).unwrap().major, 25);
+        assert!(newest_gradle_jdk((9, 0), &installed[4..]).is_none());
     }
 
     #[test]
@@ -2020,6 +2119,74 @@ mod gradle_runtime_tests {
 #[cfg(test)]
 mod maven_linkage_tests {
     use super::*;
+
+    #[test]
+    fn hybrid_vtsls_gets_one_server_a_full_heap_and_no_type_acquisition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The Vue package the hybrid block finds through the command's package dir.
+        let bin = root.join("tools/node_modules/.bin/vue-language-server");
+        let pkg = root.join("tools/node_modules/@vue/language-server/package.json");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pkg.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        std::fs::write(&pkg, "{}").unwrap();
+        let mut s = Settings::default();
+        s.tools
+            .insert(vue::SERVER.into(), ide_core::settings::ToolSettings { path: bin.to_string_lossy().into_owned() });
+        std::fs::write(root.join("tsconfig.json"), "{}").unwrap();
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert_eq!(options.pointer("/typescript/tsserver/useSyntaxServer"), Some(&json!("never")));
+        assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(8192)));
+        assert_eq!(options.pointer("/typescript/disableAutomaticTypeAcquisition"), Some(&json!(true)));
+        // A user-set limit wins over the automatic one.
+        s.languages.typescript.tsserver_max_memory = 6144;
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(6144)));
+    }
+
+    #[test]
+    fn hybrid_without_a_config_keeps_type_acquisition_and_plain_vtsls_stays_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let bin = root.join("tools/node_modules/.bin/vue-language-server");
+        let pkg = root.join("tools/node_modules/@vue/language-server/package.json");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pkg.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        std::fs::write(&pkg, "{}").unwrap();
+        let mut s = Settings::default();
+        s.tools
+            .insert(vue::SERVER.into(), ide_core::settings::ToolSettings { path: bin.to_string_lossy().into_owned() });
+        // No tsconfig/jsconfig anywhere: inferred projects still want the typings installer.
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert!(options.pointer("/typescript/disableAutomaticTypeAcquisition").is_none());
+        assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(8192)));
+        // Without the Vue package there is no hybrid mode: nothing is injected. The
+        // command points at a bare binary, so the package lookup finds nothing
+        // (a bare name would resolve on the host's PATH and break the test).
+        std::fs::write(root.join("bare-vue-language-server"), "#!/bin/sh\n").unwrap();
+        s.tools
+            .insert(vue::SERVER.into(), ide_core::settings::ToolSettings { path: "bare-vue-language-server".into() });
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert!(options.pointer("/typescript/tsserver/useSyntaxServer").is_none());
+        assert!(options.pointer("/typescript/tsserver/maxTsServerMemory").is_none());
+        // A user-set limit applies to plain TypeScript projects too.
+        s.languages.typescript.tsserver_max_memory = 12288;
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(12288)));
+        assert!(options.pointer("/typescript/tsserver/useSyntaxServer").is_none());
+    }
 
     #[test]
     fn default_maven_repository_reads_the_user_settings() {

@@ -55,7 +55,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.6";
+pub const API_VERSION: &str = "1.8";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -170,6 +170,11 @@ pub trait HostApi: Send + Sync {
         let _ = (client, tab, cancel, timeout);
         Err(HostError::Failed("content tabs unavailable".into()))
     }
+    /// Opens a diff of two texts in the invoking window.
+    fn open_diff(&self, client: &str, diff: crate::ContentDiff, file_name: Option<String>) -> Result<(), HostError> {
+        let _ = (client, diff, file_name);
+        Err(HostError::Failed("diffs unavailable".into()))
+    }
     /// Answers a content action in the invoking window.
     fn reply_content_tab(&self, client: &str, request: &str, reply: crate::ContentTabReply) -> Result<(), HostError> {
         let _ = (client, request, reply);
@@ -227,6 +232,11 @@ pub trait HostApi: Send + Sync {
         item: Option<crate::FileDecoration>,
     ) -> Result<(), HostError> {
         let _ = (path, set, item);
+        Err(HostError::Failed("decorations unavailable".into()))
+    }
+    /// Replace all `(path, icon)` entries of a tree decoration set at once (API 1.8).
+    fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
+        let _ = (set, items);
         Err(HostError::Failed("decorations unavailable".into()))
     }
     /// Trusted repository history.
@@ -365,14 +375,7 @@ pub trait HostApi: Send + Sync {
     }
     /// The most specific open project containing a document (including a new file).
     fn project_of(&self, path: &Path) -> Option<std::path::PathBuf> {
-        if !path.is_absolute() {
-            return None;
-        }
-        let real = crate::resolve_real(path);
-        self.projects()
-            .into_iter()
-            .filter(|root| real.starts_with(crate::resolve_real(root)))
-            .max_by_key(|root| root.components().count())
+        crate::sandbox::innermost_root(self.projects(), path)
     }
 
     /// Searches the current in-memory index of an open project.
@@ -1060,6 +1063,9 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         }),
         WorkbenchEvent::EditorFocused(p) => wit_events::Event::EditorFocused(p),
         WorkbenchEvent::VcsChanged(p) => wit_events::Event::VcsChanged(p),
+        WorkbenchEvent::ProblemsChanged => {
+            wit_events::Event::Other(wit_types::Extension { kind: "problems-changed".into(), data: "{}".into() })
+        }
         WorkbenchEvent::Scheduled => wit_events::Event::Scheduled,
         WorkbenchEvent::ActionPerformed(a) => wit_events::Event::ActionPerformed(wit_events::ActionPerformed {
             action: a.action,

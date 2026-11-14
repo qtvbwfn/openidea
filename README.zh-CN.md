@@ -10,61 +10,79 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/l0ng-ai/openidea/blob/main/README.md">English</a>
+  <a href="https://github.com/l0ng-ai/openidea/blob/main/README.md">English</a> · 简体中文
 </p>
 
 <p align="center">
   <a href="https://github.com/l0ng-ai/openidea/releases/latest"><b>下载</b></a>
   &nbsp;·&nbsp;
-  <a href="#基准测试">基准测试</a>
+  <a href="https://openidea.sh/zh">文档</a>
   &nbsp;·&nbsp;
-  <a href="#构建">构建</a>
+  <a href="#性能对比">性能对比</a>
   &nbsp;·&nbsp;
-  <a href="https://discord.gg/2Zy4yn7gP">Discord</a>
+  <a href="#插件">插件</a>
+  &nbsp;·&nbsp;
+  <a href="#社区">社区</a>
+  &nbsp;·&nbsp;
+  <a href="#赞助">赞助</a>
 </p>
 
 https://github.com/user-attachments/assets/234dd54c-1255-4b3a-b35c-533d78d737c0
 
-OpenIDEA 把 IntelliJ IDEA 的工作方式——它的快捷键、工具窗口、随处搜索的习惯——带到一个以 Rust 为核心的原生应用中。
+OpenIDEA 把 IntelliJ IDEA 的使用方式（快捷键、工具窗口、随处搜索的习惯）带到一个以 Rust
+为核心的原生桌面应用里。
 
-编辑器、代码洞察、调试器、Git、终端、数据库与 HTTP 客户端，支持 60 多种语言。可构建于 macOS、Windows 和 Linux。
+编辑器、代码洞察、调试器、Git、终端、数据库客户端和 HTTP 客户端，支持 60 多种语言。
+提供 macOS、Windows 和 Linux 版本。
 
-## 基准测试
+## 性能对比
 
-打开 [freqtrade](https://github.com/freqtrade/freqtrade)（Python，约 770 个文件），缓存已预热，取 5 次运行的中位数：
+在缓存已预热的情况下打开 [freqtrade](https://github.com/freqtrade/freqtrade)（Python，约 770 个文件），
+取 5 次运行的中位数：
 
 |                       | OpenIDEA       | IntelliJ IDEA 2026.2.3 |
 | --------------------- | -------------- | ---------------------- |
-| 打开项目窗口          | **0.9 秒**     | 3.1 秒                 |
-| 就绪（CPU 平稳）      | **1.1 秒**     | 13.2 秒                |
+| 显示项目窗口          | **0.9 s**      | 3.1 s                  |
+| 就绪（CPU 平稳）      | **1.1 s**      | 13.2 s                 |
 | 内存（USS，所有进程） | **169 MB**     | 2011 MB                |
-| 就绪前的 CPU 时间     | **2.4 秒**     | 47.9 秒                |
-| 空闲 CPU              | **单核的 4 %** | 单核的 7 %             |
-| 退出                  | **0.3 秒**     | 5.9 秒                 |
+| 就绪前消耗的 CPU 时间 | **2.4 s**      | 47.9 s                 |
+| 空闲 CPU              | 单核的 **4 %** | 单核的 7 %             |
+| 退出                  | **0.3 s**      | 5.9 s                  |
 
-以上为 `main` 分支构建的 OpenIDEA release 版本，与使用默认设置和默认插件的 IDEA，运行于 Windows 11、32 核 AMD、62 GB 内存的机器上。
-IDEA 对 Python 的分析更深入，因此两边的“就绪”并不代表完成了同样的工作量。两者的测量都从外部进行、方式一致：参见
-[`perf/compare`](perf/compare)，可在你自己的机器和项目上复现。
+测试使用 `main` 分支的 OpenIDEA release 构建，以及默认设置和插件的 IDEA，环境为 Windows 11、
+32 核 AMD、62 GB 内存。IDEA 对 Python 的分析更深入，所以两边的“就绪”并不代表完成了同样多的工作。
+两者都以相同方式从外部测量：可以用 [`perf/compare`](perf/compare) 在自己的机器和项目上复现。
 
-## 构建
+## 插件
 
-```sh
-pnpm install
-pnpm tauri dev
-```
+插件可以添加操作、补全、快速修复、工具窗口、自定义编辑器、主题、文件图标和语言。插件以沙箱化的
+WebAssembly 组件运行；主题、图标主题和语言无需编写代码。
 
-需要 Rust 1.96、Node 22、pnpm 以及 [Tauri 的依赖](https://v2.tauri.app/start/prerequisites/)。
+在“设置 › 插件”中安装，或用 `openidea-plugin new` 创建自己的插件：参见
+[编写 OpenIDEA 插件](https://openidea.sh/zh/plugins)和[官方插件](plugins/official)。插件 API 目前仍是预览版。
 
-原生 Notebook 执行测试默认不启用，需要两个都已安装 `ipykernel` 的独立 Python 环境：
+## 社区
 
-```sh
-OPENIDEA_TEST_PYTHON=/first/env/bin/python \
-OPENIDEA_TEST_PYTHON_SECOND=/second/env/bin/python \
-cargo test -p ide-notebook --test kernel_runtime -- --ignored --test-threads=1
-```
+- [Discord](https://discord.gg/2Zy4yn7gP)：提问、反馈和版本发布消息。
+- 微信群，扫码加入：
+
+  <img src=".github/assets/wechat-group.png" alt="微信群二维码" width="200">
+
+- 参与贡献：参见 [CONTRIBUTING.md](CONTRIBUTING.md) 和[贡献者文档](https://openidea.sh/zh/contribute/setup)。
+
+## 赞助
+
+如果 OpenIDEA 帮你节省了时间，可以通过支付宝或微信支付支持它的开发。
+
+<table>
+  <tr>
+    <td align="center"><img src=".github/assets/sponsor-alipay.png" alt="支付宝收款码" width="200"><br>支付宝</td>
+    <td align="center"><img src=".github/assets/sponsor-wechat.png" alt="微信支付收款码" width="200"><br>微信支付</td>
+  </tr>
+</table>
 
 ## 许可证
 
-[Apache 2.0](LICENSE)。随附的第三方资源列于 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md)。
+[Apache 2.0](LICENSE)。随附的第三方资源列在 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) 中。
 
-<sub>本项目与 JetBrains 无任何关联。IntelliJ IDEA 是 JetBrains s.r.o. 的商标。</sub>
+<sub>与 JetBrains 无关联。IntelliJ IDEA 是 JetBrains s.r.o. 的商标。</sub>
