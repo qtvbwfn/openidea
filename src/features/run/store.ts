@@ -93,6 +93,8 @@ export interface RunSession {
   terminal?: boolean;
   /** The HTTP port the application's embedded web server reported it started on. */
   httpPort?: number;
+  /** Pinned tab: once finished, a later run opens a new tab instead of taking its place. */
+  pinned?: boolean;
 }
 
 interface SessionRuntime {
@@ -148,6 +150,8 @@ interface RunState {
   pinned: string[];
   /** Ids of the configurations started last, newest first (at most `MAX_RECENT`). */
   recent: string[];
+  /** The chooser's "All Configurations" group is expanded (kept per project). */
+  allExpanded: boolean;
   sessions: RunSession[];
   activeSession: string | null;
   /** Output version per session (re-render trigger for the console). */
@@ -175,6 +179,7 @@ export const useRun = create<RunState>(() => ({
   temporary: [],
   pinned: [],
   recent: [],
+  allExpanded: false,
   sessions: [],
   activeSession: null,
   versions: {},
@@ -245,6 +250,7 @@ export async function loadConfigs(): Promise<void> {
       temporary: temps.map((t) => t.id),
       pinned: readIds(PINNED_KEY, root),
       recent: readIds(RECENT_KEY, root),
+      allExpanded: readAllExpanded(root),
       loaded: true,
       loadError: null,
       selectedId,
@@ -275,7 +281,30 @@ export function selectConfig(id: string | null) {
 
 const PINNED_KEY = "openidea.run.pinned:";
 const RECENT_KEY = "openidea.run.recent:";
+const ALL_EXPANDED_KEY = "openidea.run.allExpanded:";
 export const MAX_RECENT = 5;
+
+function readAllExpanded(root: string): boolean {
+  try {
+    return localStorage.getItem(ALL_EXPANDED_KEY + root) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Expands or collapses the chooser's "All Configurations" group. Kept per project. */
+export function toggleAllConfigurations() {
+  const allExpanded = !useRun.getState().allExpanded;
+  useRun.setState({ allExpanded });
+  const root = useProject.getState().project?.root;
+  if (!root) return;
+  try {
+    if (allExpanded) localStorage.setItem(ALL_EXPANDED_KEY + root, "1");
+    else localStorage.removeItem(ALL_EXPANDED_KEY + root);
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 function readIds(key: string, root: string): string[] {
   try {
@@ -725,7 +754,25 @@ export function sessionsOf(config: RunConfig, sessions = useRun.getState().sessi
   return sessions.filter((s) => ids.has(s.config.id));
 }
 
-/** Starts `config`, reusing the tab of a finished (or the given) session for the same config. */
+/**
+ * The finished tab a run of `config` takes the place of, as IDEA reuses run content: not a
+ * pinned one; that of the same configuration first, then the selected one, then the first.
+ * Agents' commands keep to their own tabs.
+ */
+function reusableTab(sessions: readonly RunSession[], active: string | null, config: RunConfig) {
+  const free = sessions.filter((s) => !isLive(s) && !s.pinned);
+  const same = free.find((s) => s.config.id === config.id);
+  if (same || agentName(config) !== null) return same;
+  const others = free.filter((s) => agentName(s.config) === null);
+  return others.find((s) => s.id === active) ?? others[0];
+}
+
+/** Pins or unpins a session's tab. */
+export function pinSession(id: string, pinned: boolean) {
+  patchSession(id, { pinned });
+}
+
+/** Starts `config`, reusing the tab of a finished (or the given) session (see `reusableTab`). */
 export async function startRun(
   config: RunConfig,
   reuse?: string,
@@ -793,7 +840,8 @@ export async function startRun(
   // The new process starts once the old one is gone (it may still hold a port or a lock). As in
   // IDEA there is no time limit: a first Stop waits for the shutdown, a second one kills it.
   await waitForExit(stopping, null);
-  session ??= state.sessions.find((s) => s.config.id === config.id && !busy(s));
+  const now = useRun.getState();
+  session ??= reusableTab(now.sessions, now.activeSession, config);
 
   try {
     await maybeEditorService()?.saveAll();
@@ -837,6 +885,7 @@ export async function startRun(
       endedAt: null,
       stdinClosed: false,
       baseConfig,
+      pinned: workflowSettings().run.pinTabs || undefined,
     };
     runtimes.set(session.id, newRuntime(config));
     const created = session;
@@ -1534,6 +1583,7 @@ export function resetRuns() {
     temporary: [],
     pinned: [],
     recent: [],
+    allExpanded: false,
     sessions: [],
     activeSession: null,
     versions: {},

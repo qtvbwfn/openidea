@@ -74,6 +74,8 @@ export interface DebugSession {
   programInput?: boolean;
   /** Process the session is attached to (a Run tab's build tool); stopped with the session. */
   process: RunId | null;
+  /** Pinned tab (root sessions): once finished, a later session opens a new tab instead of taking its place. */
+  pinned?: boolean;
   status: SessionStatus;
   stoppedThread: number | null;
   stopReason: string | null;
@@ -304,15 +306,30 @@ function settleStart(id: DebugSessionId | null, discard = false) {
   for (const s of leftovers) if (isLive(useDebug.getState().sessions[s])) markTerminated(s);
 }
 
-/** Drops finished sessions; running ones stay (multiple concurrent sessions are fine). */
-function dropFinished() {
-  useDebug.setState((s) => {
-    const sessions = Object.fromEntries(Object.entries(s.sessions).filter(([, v]) => isLive(v)));
-    const consoleLines = Object.fromEntries(Object.entries(s.console).filter(([k]) => sessions[+k]));
-    for (const id of ansiStreams.keys()) if (!sessions[id]) ansiStreams.delete(id);
-    return { sessions, console: consoleLines, active: s.active != null && sessions[s.active] ? s.active : null };
-  });
-  publishContext();
+/** The session being rerun: its tab is the one the new session takes, pinned or not. */
+let rerunOf: DebugSessionId | null = null;
+
+/**
+ * As IDEA reuses run content: a new session takes the place of one finished tab (with its
+ * children) that isn't pinned, preferring one named like it, then the selected one; other
+ * finished tabs stay. Returns whether the new tab is pinned: as the tab it replaced on a
+ * rerun, else per the settings.
+ */
+function replaceFinished(name: string): boolean | undefined {
+  const { sessions, active } = useDebug.getState();
+  const own = rerunOf != null ? sessions[rerunOf] : undefined;
+  rerunOf = null;
+  if (own && !isLive(own)) {
+    removeSession(own.id);
+    return own.pinned;
+  }
+  const finished = Object.values(sessions).filter((s) => s.parent == null && !isLive(s) && !s.pinned);
+  const selected = active != null ? sessions[active] : undefined;
+  const ordered =
+    selected && finished.includes(selected) ? [selected, ...finished.filter((s) => s !== selected)] : finished;
+  const reused = ordered.find((s) => s.name === name) ?? ordered[0];
+  if (reused) removeSession(reused.id);
+  return workflowSettings().run.pinTabs || undefined;
 }
 
 /**
@@ -392,6 +409,7 @@ export function publishContext() {
   );
   // Refresh Memory View acts on the selected session only.
   setContext("debugHasJvmMemory", !!s && isLive(s) && sessionSupports("jvmMemory", s));
+  setContext("debugHasJsPage", !!s && isLive(s) && sessionSupports("jsPage", s));
 }
 
 // --- console -----------------------------------------------------------------
@@ -510,6 +528,15 @@ function selectBrowserPage(launch: DebugSessionId) {
   publishContext();
 }
 
+/** `url` as `location.href` spells it (`http://localhost:5173` → `http://localhost:5173/`). */
+function canonicalUrl(url: string): string {
+  try {
+    return new URL(url).href;
+  } catch {
+    return url;
+  }
+}
+
 /**
  * Debugs the page `launch` opens. A project has one browser of a kind under the debugger (a
  * second one can't share its profile), so when it is already running its page goes to the URL
@@ -531,9 +558,10 @@ export async function startBrowserSession(
   const url = launchedUrl(launch);
   if (url) {
     // The page may have moved on since the browser started (an earlier launch, a link): it
-    // compares its own address, so a page already there isn't reloaded.
-    const target = JSON.stringify(url);
-    const go = `(() => { const u = new URL(${target}, location.href).href; if (location.href !== u) location.assign(u); })()`;
+    // compares its own address, so a page already there isn't reloaded. The address is made
+    // canonical here, the page's own `URL` may be anything.
+    const target = JSON.stringify(canonicalUrl(url));
+    const go = `location.href !== ${target} && location.assign(${target})`;
     await call(commands.debugEvaluateIn(page.id, null, go, "repl")).catch(() => undefined);
   }
   return running.id;
@@ -659,10 +687,17 @@ export async function startPreparedSession(
   const id = --preparationSeq as DebugSessionId;
   const controller = new AbortController();
   preparations.set(id, controller);
+  // The new tab takes the place of a finished one while its build runs, not once the adapter starts.
+  const pinned = replaceFinished(config.name);
   useDebug.setState((s) => ({
     sessions: {
       ...s.sessions,
-      [id]: blank(id, { name: config.name, adapter: config.debugAdapter ?? "", runConfig: config }),
+      [id]: blank(id, {
+        name: config.name,
+        adapter: config.debugAdapter ?? "",
+        runConfig: config,
+        pinned,
+      }),
     },
     console: { ...s.console, [id]: [] },
     active: id,
@@ -715,7 +750,7 @@ export async function startSession(
   // Attaching to a JVM that may be gone: the finished session stays until the attach succeeds.
   const afterDetach = justDetached(options.process);
   const previousActive = useDebug.getState().active;
-  if (!afterDetach) dropFinished();
+  let pinned = !afterDetach && !options.preparation ? replaceFinished(launch.name) : undefined;
   try {
     if (options.show !== false && workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
@@ -730,7 +765,7 @@ export async function startSession(
     const id = await call(commands.debugStart(launch));
     console.info("Debug adapter started", { name: launch.name, ms: performance.now() - adapterStarted });
     owned.add(id);
-    if (afterDetach) dropFinished();
+    if (afterDetach && !options.preparation) pinned = replaceFinished(launch.name);
     if (options.preparation?.signal.aborted) {
       await call(commands.debugStop(id)).catch(() => undefined);
       settleStart(id);
@@ -762,6 +797,7 @@ export async function startSession(
             adapter: cur.adapter || launch.adapter,
             launch: options.rerunnable === false ? null : launch,
             process: options.process ?? null,
+            pinned: preparation ? preparation.pinned : pinned,
             status: cur.status === "starting" ? "running" : cur.status,
           },
         },
@@ -867,15 +903,20 @@ export async function closeSessionTab(id: DebugSessionId): Promise<boolean> {
     await stopSession(s.id);
   }
   removeSession(s.id);
-  // As in IDEA, the tool window goes away with its last tab.
+  // As in IDEA, the tool window and its stripe button go away with its last tab.
   if (!Object.keys(useDebug.getState().sessions).length) {
     try {
-      toolWindowService().hide("debug");
+      toolWindowService().hide("debug", { removeFromStripe: true });
     } catch {
       // Workbench not ready (tests).
     }
   }
   return true;
+}
+
+/** Pins or unpins a session's tab. */
+export function pinSession(id: DebugSessionId, pinned: boolean) {
+  patch(id, { pinned });
 }
 
 /** Forgets a session and its children; a selected one passes the selection to the tab on its left. */
@@ -905,6 +946,7 @@ export function removeSession(id: DebugSessionId) {
   });
   for (const goneId of gone) {
     owned.delete(goneId);
+    ansiStreams.delete(goneId);
     unfollowProcessOutput(goneId);
   }
   updateExecutionPoint();
@@ -915,18 +957,20 @@ export async function rerunSession(id: DebugSessionId, options: { show?: boolean
   const s = useDebug.getState().sessions[id];
   if (!s) return;
   const root = rootOf(s);
-  if (root.runConfig) {
-    if (isLive(root)) await stopSession(root.id);
-    await executeAction(
-      "run.debugConfig",
-      options.show === false ? { config: root.runConfig, show: false } : root.runConfig,
-    );
-    return;
-  }
   const launch = root.launch;
-  if (!launch) return;
+  if (!root.runConfig && !launch) return;
   if (isLive(root)) await stopSession(root.id);
-  await startSession(launch, { show: options.show });
+  rerunOf = root.id;
+  try {
+    if (root.runConfig)
+      await executeAction(
+        "run.debugConfig",
+        options.show === false ? { config: root.runConfig, show: false } : root.runConfig,
+      );
+    else await startSession(launch!, { show: options.show });
+  } finally {
+    rerunOf = null;
+  }
 }
 
 async function loadCapabilities(id: DebugSessionId) {

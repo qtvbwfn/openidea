@@ -3,10 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 import { SourceDialog } from "./SourceDialog";
 
 const ipc = vi.hoisted(() => ({ call: vi.fn() }));
-vi.mock("@/platform/ipc", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/platform/ipc")>()),
-  call: ipc.call,
-}));
+vi.mock("@/platform/ipc", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/platform/ipc")>();
+  // The commands `call` receives must not reach Tauri's invoke, which jsdom lacks.
+  const request =
+    (name: string) =>
+    (...args: unknown[]) => [name, ...args];
+  return {
+    ...real,
+    call: ipc.call,
+    commands: { ...real.commands, dbTest: request("dbTest"), dbTestTunnel: request("dbTestTunnel") },
+  };
+});
 
 // A command starts its raw IPC call when constructed, before the mocked `call`
 // sees it: stub `invoke` with a promise that never settles so the Test
@@ -73,6 +81,7 @@ describe("Test SSH Tunnel", () => {
     await waitFor(() =>
       expect(screen.getByRole("status").textContent).toBe("SSH tunnel works: dev@bastion:22 reaches 127.0.0.1:5432"),
     );
+    expect(ipc.call.mock.calls[0]?.[0]?.[0]).toBe("dbTestTunnel");
     ipc.call.mockClear();
   });
 });

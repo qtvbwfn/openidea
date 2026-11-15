@@ -821,8 +821,10 @@ fn a_reporting_task_outlives_its_background_budget() {
 
 #[test]
 fn background_tasks_scale_and_renew_cpu_fuel_budget() {
+    // Room for activation (about 3_100 on macOS, more on Windows) but not for `patient`'s
+    // whole run (about 9_000) without the refill on each report.
     let f = fixture(Limits {
-        fuel: 3_500,
+        fuel: 6_000,
         timeout: Duration::from_millis(500),
         background: Duration::from_millis(5_000),
         ..Limits::default()
@@ -831,14 +833,14 @@ fn background_tasks_scale_and_renew_cpu_fuel_budget() {
     if f.host.set_capability("misbehave", "process:git", true).is_err() {
         return;
     }
-    // Warm up activation in its own call so `patient` starts with a fresh 3_500-fuel budget.
+    // Warm up activation in its own call so `patient` starts with a fresh budget.
     assert_eq!(f.run("misbehave", "echo", Some("warm")).unwrap().as_deref(), Some("warm"));
 
     let out = f.run("misbehave", "patient", None).expect("background task succeeds").expect("output");
     assert_eq!(out, "still here");
 
     let err = f.run("misbehave", "spin", None).unwrap_err();
-    assert!(err.contains("exceeded its CPU budget (3500 fuel per call)"), "{err}");
+    assert!(err.contains("exceeded its CPU budget (6000 fuel per call)"), "{err}");
 }
 
 #[test]
@@ -6448,7 +6450,13 @@ fn api14_stage3_configurations_test_results_and_content_actions_use_real_exports
     let configs = f.host.run_detection().detect(&f.project);
     assert!(configs.iter().any(|c| c.id == "plugin:execution:dynamic"
         && c.is_test
-        && c.extras.params.get("framework").map(String::as_str) == Some("plugin")));
+        && c.extras.params.get("framework").map(String::as_str) == Some("plugin")
+        && c.env.get("OPENIDEA_EXECUTION_FIXTURE").map(String::as_str) == Some("1")
+        && c.extras.params.get("debugLanguage").map(String::as_str) == Some("python")));
+    let worker = configs.iter().find(|c| c.id == "plugin:execution:worker").unwrap();
+    assert_eq!(worker.extras.params.get("debugAttach").map(String::as_str), Some("dotnet"));
+    assert_eq!(worker.extras.params.get("debugAttachContains").map(String::as_str), Some("Worker.dll"));
+    assert!(worker.env.is_empty() && !worker.is_test);
     assert_eq!(
         f.host.parse_test_results("main", "plugin:execution:dynamic", "batch".into()).unwrap().unwrap().len(),
         3
