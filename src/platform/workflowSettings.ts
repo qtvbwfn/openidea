@@ -97,6 +97,7 @@ export interface DebuggerSettingsValid {
   showOnBreakpoint: boolean;
   focusAppOnBreakpoint: boolean;
   hideOnTermination: boolean;
+  variablesOnBreakpoint: boolean;
   breakpointsAnyFile: boolean;
   runToCursorInlay: boolean;
   inlineValues: boolean;
@@ -115,6 +116,8 @@ export interface RunSettingsValid {
   confirmRerun: boolean;
   confirmTerminate: boolean;
   showOnStart: boolean;
+  /** New Run/Debug tabs start pinned, so a later run doesn't take their place (IDEA's advanced setting). */
+  pinTabs: boolean;
   terminationTimeoutMs: number;
 }
 
@@ -290,6 +293,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     showOnBreakpoint: true,
     focusAppOnBreakpoint: false,
     hideOnTermination: false,
+    variablesOnBreakpoint: true,
     breakpointsAnyFile: false,
     runToCursorInlay: true,
     inlineValues: true,
@@ -302,7 +306,14 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     debugServerPage: false,
     python: { attachSubprocess: true, gevent: false },
   },
-  run: { defaultTarget: "", confirmRerun: true, confirmTerminate: true, showOnStart: true, terminationTimeoutMs: 3000 },
+  run: {
+    defaultTarget: "",
+    confirmRerun: true,
+    confirmTerminate: true,
+    showOnStart: true,
+    pinTabs: false,
+    terminationTimeoutMs: 3000,
+  },
   terminal: {
     startDirectory: "",
     env: {},
@@ -449,6 +460,7 @@ export function validateDebugger(raw: unknown): DebuggerSettingsValid {
     showOnBreakpoint: bool(v.showOnBreakpoint, d.showOnBreakpoint),
     focusAppOnBreakpoint: bool(v.focusAppOnBreakpoint, d.focusAppOnBreakpoint),
     hideOnTermination: bool(v.hideOnTermination, d.hideOnTermination),
+    variablesOnBreakpoint: bool(v.variablesOnBreakpoint, d.variablesOnBreakpoint),
     breakpointsAnyFile: bool(v.breakpointsAnyFile, d.breakpointsAnyFile),
     runToCursorInlay: bool(v.runToCursorInlay, d.runToCursorInlay),
     inlineValues: bool(v.inlineValues, d.inlineValues),
@@ -474,6 +486,7 @@ export function validateRun(raw: unknown): RunSettingsValid {
     confirmRerun: bool(v.confirmRerun, d.confirmRerun),
     confirmTerminate: bool(v.confirmTerminate, d.confirmTerminate),
     showOnStart: bool(v.showOnStart, d.showOnStart),
+    pinTabs: bool(v.pinTabs, d.pinTabs),
     terminationTimeoutMs: num(
       v.terminationTimeoutMs,
       d.terminationTimeoutMs,
