@@ -53,6 +53,9 @@ app_cancel_quit                              always             desktop      bin
 app_check_update                             always             desktop      bindings async
 app_cli_install                              always             desktop      bindings async
 app_cli_uninstall                            always             desktop      bindings async
+app_home                                     always             desktop      bindings sync
+app_home_reset                               always             desktop      bindings sync
+app_home_set                                 always             desktop      bindings sync
 app_info                                     always             desktop      bindings sync
 app_install_update                           always             desktop      bindings async
 app_log_location                             always             desktop      bindings sync
@@ -287,7 +290,9 @@ http_history_get                             trusted            desktop      bin
 http_requests                                trusted            desktop      bindings sync
 http_variable_definitions                    trusted            desktop      bindings async
 index_file_extensions                        always             project_host bindings sync
+index_goto                                   trusted            desktop      bindings async
 index_status                                 always             project_host bindings sync
+index_usages                                 trusted            desktop      bindings async
 inspect_code                                 trusted            project_host bindings async
 java_build_workspace                         trusted            project_host bindings async
 java_debug_server                            trusted            project_host bindings async
@@ -365,6 +370,9 @@ menu_configure                               always             desktop      bin
 menu_model                                   always             desktop      bindings sync
 menu_refresh                                 always             desktop      bindings sync
 menu_set_disabled                            always             desktop      bindings sync
+migration_apply                              always             desktop      bindings sync
+migration_decline                            always             desktop      bindings sync
+migration_status                             always             desktop      bindings sync
 nav_index_definitions                        always             project_host bindings async
 nav_inheritance                              always             project_host bindings async
 nav_resolve_module                           always             project_host bindings async
