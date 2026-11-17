@@ -3,9 +3,9 @@
 //! `cargo run --release --example occ_bench -- <project-dir>`
 //!
 //! Measures, against the given directory: cold index build (scan + extraction
-//! + persistence), index DB size on disk, process RSS after the scan settles,
-//! `usages_of` lookup latency over real indexed names, and a recall spot-check
-//! of the inverted map against plain text search.
+//! and persistence), index DB size on disk, process RSS after the scan settles,
+//! the `usages_of` lookup latency over real indexed names, and a recall
+//! spot-check of the inverted map against the sampled files' identifier tokens.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -30,7 +30,11 @@ fn main() {
     let rss_mib = || -> f64 {
         // macOS/Linux: `ps -o rss=` reports KiB.
         let out = std::process::Command::new("ps").args(["-o", "rss=", "-p", &pid.to_string()]).output();
-        out.ok().and_then(|o| String::from_utf8(o.stdout).ok()).and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(0.0) / 1024.0
+        out.ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .unwrap_or(0.0)
+            / 1024.0
     };
 
     let languages = Arc::new(LanguageRegistry::load(None).unwrap());
@@ -47,16 +51,9 @@ fn main() {
     {
         let languages = Arc::new(LanguageRegistry::load(None).unwrap());
         let syntax = Arc::new(Syntax::new());
-        let base = ProjectIndex::open(
-            &empty,
-            &empty,
-            Vec::<PathBuf>::new(),
-            vec![],
-            languages,
-            syntax,
-            Arc::new(NullSink),
-        )
-        .unwrap();
+        let base =
+            ProjectIndex::open(&empty, &empty, Vec::<PathBuf>::new(), vec![], languages, syntax, Arc::new(NullSink))
+                .unwrap();
         assert!(base.wait_idle(Duration::from_secs(60)));
     }
     println!("RSS baseline (empty project): {:.0} MiB", rss_mib());
@@ -67,10 +64,7 @@ fn main() {
     let idle = index.wait_idle(Duration::from_secs(600));
     let build = started.elapsed();
     let status = index.status();
-    println!(
-        "cold build: {build:.2?} (wait_idle={idle}) — files {}, symbols {}",
-        status.files, status.symbols
-    );
+    println!("cold build: {build:.2?} (wait_idle={idle}) — files {}, symbols {}", status.files, status.symbols);
     println!("RSS after build: {:.0} MiB", rss_mib());
     index.compact();
     println!("RSS after compact: {:.0} MiB", rss_mib());
@@ -131,12 +125,7 @@ fn main() {
     // Recall spot-check, done the way #2024 defines it: sample real code files,
     // extract the identifier tokens they contain, and check how many of those
     // tokens the inverted map covers for that file (a token counts as covered
-    // when `usages_of(token)` lists an occurrence in the same file). Names are
-    // filtered to identifier-shaped probes (no kebab-case component tags).
-    let mut names: Vec<String> = names
-        .into_iter()
-        .filter(|n| !n.contains('-') && n.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_'))
-        .collect();
+    // when `usages_of(token)` lists an occurrence in the same file).
 
     // Sample up to 6 code files of mixed kinds from the target.
     let mut sample: Vec<PathBuf> = Vec::new();
@@ -203,12 +192,47 @@ fn main() {
                     && !ident.chars().next().unwrap().is_ascii_digit()
                     && !matches!(
                         ident.as_str(),
-                        "this" | "const" | "let" | "var" | "function" | "return" | "import" | "export"
-                            | "from" | "class" | "interface" | "type" | "true" | "false" | "null"
-                            | "undefined" | "if" | "else" | "for" | "while" | "new" | "await"
-                            | "async" | "typeof" | "instanceof" | "default" | "extends" | "static"
-                            | "throw" | "catch" | "try" | "switch" | "case" | "break" | "continue"
-                            | "string" | "number" | "boolean" | "value" | "index" | "length"
+                        "this"
+                            | "const"
+                            | "let"
+                            | "var"
+                            | "function"
+                            | "return"
+                            | "import"
+                            | "export"
+                            | "from"
+                            | "class"
+                            | "interface"
+                            | "type"
+                            | "true"
+                            | "false"
+                            | "null"
+                            | "undefined"
+                            | "if"
+                            | "else"
+                            | "for"
+                            | "while"
+                            | "new"
+                            | "await"
+                            | "async"
+                            | "typeof"
+                            | "instanceof"
+                            | "default"
+                            | "extends"
+                            | "static"
+                            | "throw"
+                            | "catch"
+                            | "try"
+                            | "switch"
+                            | "case"
+                            | "break"
+                            | "continue"
+                            | "string"
+                            | "number"
+                            | "boolean"
+                            | "value"
+                            | "index"
+                            | "length"
                     )
                 {
                     tokens.insert(ident.clone());
@@ -220,10 +244,8 @@ fn main() {
         }
         let mut covered = 0usize;
         for token in &tokens {
-            let in_file = index
-                .usages_of(token, false)
-                .iter()
-                .any(|loc| file.ends_with(Path::new(loc.path.as_os_str())));
+            let in_file =
+                index.usages_of(token, false).iter().any(|loc| file.ends_with(Path::new(loc.path.as_os_str())));
             covered += usize::from(in_file);
         }
         covered_total += covered;
