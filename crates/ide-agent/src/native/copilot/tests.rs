@@ -6,7 +6,6 @@ use ide_jsonrpc::{Framing, Handler, Peer, codes};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 
 fn sample_models_list() -> Value {
     json!({
@@ -573,7 +572,8 @@ async fn shim_creates_session_with_copilot_defaults_switches_tiers_and_streams_t
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shim_forwards_disabled_mcp_servers_on_create_and_resume() {
-    let server = Arc::new(FakeCopilotServer { peer: OnceLock::new(), calls: Mutex::new(Vec::new()) });
+    let server =
+        Arc::new(FakeCopilotServer { peer: OnceLock::new(), calls: Mutex::new(Vec::new()), background_shell: false });
     let updates = Arc::new(CollectUpdates(Mutex::new(Vec::new())));
     let server_clone = server.clone();
     let client = attach(updates, move |events| {
