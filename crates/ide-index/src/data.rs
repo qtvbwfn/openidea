@@ -655,8 +655,14 @@ impl IndexData {
 
     fn occ_add(&mut self, slot: u32, entry: &FileEntry) {
         for (name, range, qualified, css) in &entry.occurrences {
-            let list =
-                if *css { &mut self.css_occ_by_name } else { &mut self.occ_by_name }.entry(name.clone()).or_default();
+            let map = if *css { &mut self.css_occ_by_name } else { &mut self.occ_by_name };
+            // The name is usually already in the map: look it up without the
+            // temporary `Box` clone `entry` would allocate, and only pay the
+            // clone on a first sighting.
+            let list = match map.get_mut(name.as_ref()) {
+                Some(list) => list,
+                None => map.entry(name.clone()).or_default(),
+            };
             list.push(OccSlot { slot, range: *range, qualified: *qualified, css: *css });
             self.occ_total += 1;
         }
@@ -744,6 +750,14 @@ impl IndexData {
             self.dirs.insert(rel, (path, count, row));
         }
         self.free.clear();
+        // The per-name lists grew by doubling while hydrating; hand the spare
+        // capacity back before the index serves queries.
+        for list in self.occ_by_name.values_mut() {
+            list.shrink_to_fit();
+        }
+        for list in self.css_occ_by_name.values_mut() {
+            list.shrink_to_fit();
+        }
     }
 
     /// The persisted form of a file, rebuilt from [`IndexData::syms`].
@@ -928,6 +942,14 @@ impl IndexData {
         self.syms.compact(&mut self.hot.rows, &mut self.files);
         self.syms.shrink();
         self.free.shrink_to_fit();
+        // The inverted occurrence map shrinks with the rest: lists that lost
+        // entries to removals keep their doubled capacity otherwise.
+        for list in self.occ_by_name.values_mut() {
+            list.shrink_to_fit();
+        }
+        for list in self.css_occ_by_name.values_mut() {
+            list.shrink_to_fit();
+        }
         self.by_path.shrink_to_fit();
         self.dirs.shrink_to_fit();
     }
@@ -1030,6 +1052,48 @@ mod tests {
         assert_eq!(bulk.files.len(), incremental.files.len());
         assert_eq!(bulk.slot(Path::new("/r/a/b.rs")), incremental.slot(Path::new("/r/a/b.rs")));
         assert_eq!(bulk.dirs["a/"].1, 1);
+    }
+
+    #[test]
+    fn occurrences_follow_insert_replace_and_remove() {
+        // Two files share a name; the inverted map lists both, a same-path
+        // replace drops only the old file's slot, and a remove empties the list.
+        fn entry_with_occ(path: &str, name: &str, qualified: bool) -> (FileEntry, Vec<StoredSymbol>) {
+            let record = FileRecord {
+                occurrences: vec![StoredOccurrence {
+                    name: name.to_owned(),
+                    range: Range::default(),
+                    qualified,
+                    css_class: false,
+                }],
+                ..Default::default()
+            };
+            FileEntry::new(PathBuf::from("/r").join(path), path.to_owned(), record)
+        }
+
+        let mut d = IndexData::default();
+        let (e, s) = entry_with_occ("a.rs", "shared", false);
+        d.insert(e, s);
+        let (e, s) = entry_with_occ("b.rs", "shared", true);
+        d.insert(e, s);
+        let hits = d.occurrences_of("shared", false);
+        assert_eq!(hits.len(), 2, "both files listed");
+        assert!(hits.iter().any(|(p, _, q)| p.ends_with("a.rs") && !q));
+        assert!(hits.iter().any(|(p, _, q)| p.ends_with("b.rs") && *q));
+        assert_eq!(d.occ_total, 2);
+
+        // Replace a.rs with a file that no longer has the name: its slot must
+        // be gone from the list while b.rs keeps its entry.
+        let (e, s) = entry("a.rs", 1);
+        d.insert(e, s);
+        let hits = d.occurrences_of("shared", false);
+        assert_eq!(hits.len(), 1, "the replaced file's occurrence is dropped");
+        assert!(hits[0].0.ends_with("b.rs"));
+        assert_eq!(d.occ_total, 1);
+
+        d.remove(Path::new("/r/b.rs"));
+        assert!(d.occurrences_of("shared", false).is_empty(), "the last entry empties the list");
+        assert_eq!(d.occ_total, 0);
     }
 
     #[test]
