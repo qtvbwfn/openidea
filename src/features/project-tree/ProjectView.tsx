@@ -33,6 +33,7 @@ import {
   useFileDecoration,
   type DecorationSegment,
 } from "@/workbench/contributions";
+import { useFileColors } from "@/workbench/fileColors";
 import {
   FILES_DRAG,
   REMOTE_FILES_DRAG,
@@ -57,7 +58,7 @@ import {
 import { badgeKind } from "@/ui/symbolKind";
 import { contextMenuItems, menuGroupContext, newMenuItems } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
-import { presentationIcon, useJvmPresentation } from "@/platform/filePresentation";
+import { presentationIcon, useJvmPresentation } from "@/ui/filePresentation";
 import {
   isModuleFolder,
   moduleFolderIcon,
@@ -66,7 +67,7 @@ import {
 } from "@/platform/projectPresentation";
 import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
-import { PROJECT_TYPES } from "@/platform/projectType";
+import { PROJECT_TYPES } from "@/ui/projectType";
 import { useHomeDir } from "./home";
 import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
 import {
@@ -322,8 +323,10 @@ const Row = memo(function Row({
           size={16}
           className={clsx(styles.icon, node.dir && styles.folderIcon, dimIcon && styles.faded)}
         />
+        {/* IDEA's symlink arrow, on file and folder links (the entry kind comes with the listing). */}
+        {node.symlink && <Icon name="symlink-mark" size={16} className={styles.overlay} label="Symbolic link" />}
         {!!file?.runnable && icon !== "spring-boot" && icon !== "jvm-test" && (
-          <Icon name="runnable-mark" size={16} className={styles.runnable} />
+          <Icon name="runnable-mark" size={16} className={styles.overlay} />
         )}
       </span>
       {isEditing && editing ? (
@@ -433,6 +436,8 @@ interface DragState {
 }
 
 const DRAG_THRESHOLD = 4;
+/** IDEA's "excluded" look: excluded folders and what is under them get a muted band. */
+const EXCLUDED_TINT = "var(--vcs-ignored)";
 
 /** Folder under a viewport point inside `container` (a file row resolves to its folder). */
 function folderAt(container: HTMLElement | null, x: number, y: number): { key: string; path: string } | null {
@@ -459,6 +464,7 @@ export function ProjectView() {
   useFileIconRevision();
   const root = useProjectTree((s) => s.root);
   const model = useProjectTree(selectModel);
+  const fileColors = useFileColors("projectView");
   const expanded = useProjectTree((s) => s.expanded);
   const selected = useProjectTree((s) => s.selected);
   const editing = useProjectTree((s) => s.editing);
@@ -869,7 +875,9 @@ export function ProjectView() {
         isExpandable={isExpandable}
         loadChildren={loadChildren}
         renderNode={renderNode}
-        rowClassName={(n) => (n.excluded ? styles.excludedRow : undefined)}
+        rowTint={(n) =>
+          n.excluded ? EXCLUDED_TINT : n.group || n.placeholder ? undefined : fileColors?.(n.path, n.dir)
+        }
         expanded={expanded}
         onExpandedChange={onExpandedChange}
         selected={selected}

@@ -25,6 +25,7 @@ import {
   JavaBuildFailedError,
   parseJavaArgs,
   prepareJavaLaunch,
+  remoteJavaAgentNote,
 } from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
 import { buildToolRecovery } from "@/platform/buildToolRecovery";
@@ -65,6 +66,7 @@ import { tomcatBrowserUrl } from "./tomcat";
 import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
+import { UNITY_CONFIG_KIND } from "./unity";
 
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
 export const CURRENT_FILE = "current-file";
@@ -240,11 +242,29 @@ export async function loadConfigs(): Promise<void> {
     const temps = kept.length ? await call(commands.runApplySettings(kept)).catch(() => kept) : kept;
     if (useProject.getState().project?.root !== root) return;
     const configs = [...saved, ...temps];
+    if (useProject.getState().project?.unity && !configs.some((config) => config.kind === UNITY_CONFIG_KIND)) {
+      let id = "unity-editor";
+      while (configs.some((config) => config.id === id)) id += "-attach";
+      configs.push({
+        id,
+        name: "Unity Editor",
+        kind: UNITY_CONFIG_KIND,
+        command: "",
+        args: [],
+        cwd: null,
+        env: {},
+        detected: true,
+        isTest: false,
+        debugAdapter: null,
+      });
+    }
     const stored = useRun.getState().selectedId ?? readSelected(root);
     const selectedId =
       stored === CURRENT_FILE || configs.some((c) => c.id === stored)
         ? stored
-        : (defaultSelection(saved)?.id ?? CURRENT_FILE);
+        : (configs.find((config) => config.kind === UNITY_CONFIG_KIND)?.id ??
+          defaultSelection(saved)?.id ??
+          CURRENT_FILE);
     useRun.setState({
       configs,
       temporary: temps.map((t) => t.id),
@@ -760,16 +780,35 @@ export function sessionsOf(config: RunConfig, sessions = useRun.getState().sessi
  * Agents' commands keep to their own tabs.
  */
 function reusableTab(sessions: readonly RunSession[], active: string | null, config: RunConfig) {
-  const free = sessions.filter((s) => !isLive(s) && !s.pinned);
+  const free = sessions.filter((s) => !isLive(s) && !s.pinned && !claimedTabs.has(s.id));
   const same = free.find((s) => s.config.id === config.id);
   if (same || agentName(config) !== null) return same;
   const others = free.filter((s) => agentName(s.config) === null);
   return others.find((s) => s.id === active) ?? others[0];
 }
 
+/** Tabs a starting run is about to take: runs started together (compounds, reruns of several packages) must not take the same one. */
+const claimedTabs = new Set<string>();
+
 /** Pins or unpins a session's tab. */
 export function pinSession(id: string, pinned: boolean) {
   patchSession(id, { pinned });
+}
+
+interface StartRunOptions {
+  show?: boolean;
+  /** Launch this instead of `config` (e.g. with a debug agent); the tab still shows `config`. Skips before launch tasks. */
+  launch?: RunConfig;
+  /** Every output line of this run. */
+  onLine?: (text: string) => void;
+  /** The process exited. */
+  onExit?: (exitCode: number | null, stopped: boolean) => void;
+  /** Before launch tasks already ran (or must not run). */
+  prepared?: boolean;
+  /** Configurations whose launch led to this one (before launch tasks, compounds): breaks cycles. */
+  chain?: readonly string[];
+  /** Runs before the stop signal when the user stops this run (run executors). */
+  beforeStop?: (runId: RunId) => Promise<void>;
 }
 
 /** Starts `config`, reusing the tab of a finished (or the given) session (see `reusableTab`). */
@@ -777,21 +816,22 @@ export async function startRun(
   config: RunConfig,
   reuse?: string,
   baseConfig?: RunConfig,
-  options: {
-    show?: boolean;
-    /** Launch this instead of `config` (e.g. with a debug agent); the tab still shows `config`. Skips before launch tasks. */
-    launch?: RunConfig;
-    /** Every output line of this run. */
-    onLine?: (text: string) => void;
-    /** The process exited. */
-    onExit?: (exitCode: number | null, stopped: boolean) => void;
-    /** Before launch tasks already ran (or must not run). */
-    prepared?: boolean;
-    /** Configurations whose launch led to this one (before launch tasks, compounds): breaks cycles. */
-    chain?: readonly string[];
-    /** Runs before the stop signal when the user stops this run (run executors). */
-    beforeStop?: (runId: RunId) => Promise<void>;
-  } = {},
+  options: StartRunOptions = {},
+): Promise<RunSession | null> {
+  if (!reuse || claimedTabs.has(reuse)) return startRunIn(config, reuse, baseConfig, options);
+  claimedTabs.add(reuse);
+  try {
+    return await startRunIn(config, reuse, baseConfig, options);
+  } finally {
+    claimedTabs.delete(reuse);
+  }
+}
+
+async function startRunIn(
+  config: RunConfig,
+  reuse: string | undefined,
+  baseConfig: RunConfig | undefined,
+  options: StartRunOptions,
 ): Promise<RunSession | null> {
   config = withRunTarget(config);
   if (!options.launch && isCMakeBuild(config)) {
@@ -823,13 +863,11 @@ export async function startRun(
   const others = config.allowParallel
     ? []
     : state.sessions.filter((s) => s.config.id === config.id && busy(s) && s.id !== session?.id);
-  if (others.length) {
-    if (
-      workflowSettings().run.confirmRerun &&
-      !(await confirmRerun(config.name, others.length + (session && busy(session) ? 1 : 0)))
-    )
-      return null;
-    await Promise.all(others.map((s) => stopSession(s.id)));
+  const debugging = config.allowParallel ? [] : liveDebugSessions(config.id);
+  if (others.length || debugging.length) {
+    const instances = others.length + debugging.length + (session && busy(session) ? 1 : 0);
+    if (workflowSettings().run.confirmRerun && !(await confirmRerun(config.name, instances))) return null;
+    await Promise.all([...others.map((s) => stopSession(s.id)), ...debugging.map((d) => d.stop())]);
     session ??= others[0];
   }
   const stopping = others.map((s) => s.id);
@@ -841,12 +879,16 @@ export async function startRun(
   // IDEA there is no time limit: a first Stop waits for the shutdown, a second one kills it.
   await waitForExit(stopping, null);
   const now = useRun.getState();
-  session ??= reusableTab(now.sessions, now.activeSession, config);
+  const picked = session ? undefined : reusableTab(now.sessions, now.activeSession, config);
+  session ??= picked;
 
+  if (picked) claimedTabs.add(picked.id);
   try {
     await maybeEditorService()?.saveAll();
   } catch {
     /* saving is best effort */
+  } finally {
+    if (picked) claimedTabs.delete(picked.id);
   }
 
   const startedAt = Date.now();
@@ -974,6 +1016,10 @@ export async function startRun(
       started = rt.dotnetReports.launch(started);
     }
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
+    const agentNote = await remoteJavaAgentNote(started);
+    if (runtimes.get(sessionId)?.generation !== generation || getSession(sessionId)?.stopped)
+      return getSession(sessionId) ?? null;
+    if (agentNote) enqueue(sessionId, { kind: "system", text: agentNote });
     const processStarted = performance.now();
     const request = { id: nextRequestId(), controller: new AbortController() };
     rt.resolveRequest = request;
@@ -983,12 +1029,17 @@ export async function startRun(
     }).finally(() => {
       if (rt.resolveRequest === request) delete rt.resolveRequest;
     });
-    if (request.controller.signal.aborted || getSession(sessionId)?.stopped) {
+    // Stopped, closed or started again meanwhile: nothing would own this process.
+    if (
+      request.controller.signal.aborted ||
+      !getSession(sessionId) ||
+      getSession(sessionId)?.stopped ||
+      runtimes.get(sessionId)?.generation !== generation
+    ) {
       await call(commands.runStop(info.id)).catch(() => undefined);
       return getSession(sessionId) ?? null;
     }
     console.info("Run process started", { name: config.name, ms: performance.now() - processStarted });
-    if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     if (info.pty && rt.terminalSize) void commands.runResize(info.id, rt.terminalSize.cols, rt.terminalSize.rows);
     // The process may already have exited (fast commands) before we got its id.
     const exited = pendingExits.get(info.id);
@@ -1333,6 +1384,64 @@ export async function stopSession(sessionId: string): Promise<void> {
       body: e instanceof Error ? e.message : String(e),
     });
   }
+}
+
+/** The debugger's live sessions of the configuration `configId`. */
+function liveDebugSessions(configId: string) {
+  return useDebugRunSessions
+    .getState()
+    .serviceSessions.filter((d) => d.config.id === configId && d.status !== "terminated");
+}
+
+/**
+ * Before a configuration that doesn't allow parallel runs is debugged: as in IDEA, asks before
+ * stopping its running and debugged instances, then waits for their processes to exit.
+ * False when the user keeps them.
+ */
+export async function stopRunningInstances(config: RunConfig): Promise<boolean> {
+  if (config.allowParallel) return true;
+  const runs = useRun.getState().sessions.filter((s) => s.config.id === config.id && isLive(s));
+  const debugging = liveDebugSessions(config.id);
+  if (!runs.length && !debugging.length) return true;
+  if (workflowSettings().run.confirmRerun && !(await confirmRerun(config.name, runs.length + debugging.length)))
+    return false;
+  await Promise.all([...runs.map((s) => stopSession(s.id)), ...debugging.map((d) => d.stop())]);
+  await waitForExit(
+    runs.map((s) => s.id),
+    null,
+  );
+  return true;
+}
+
+/** Configurations whose Debug is between the click and the debugger's session. */
+const debugLaunching = new Set<string>();
+
+/**
+ * Debugs `config` with `launch`, one instance at a time unless it allows parallel runs: its
+ * running and debugged instances are stopped first (`stopRunningInstances`), and a Debug while
+ * one is still preparing (building) is ignored.
+ */
+export async function debugSingleInstance(config: RunConfig, launch: () => Promise<void>): Promise<void> {
+  if (config.allowParallel) return launch();
+  if (debugLaunching.has(config.id)) return;
+  debugLaunching.add(config.id);
+  let stopWatching = () => {};
+  let launched: Promise<void> | null = null;
+  try {
+    if (!(await stopRunningInstances(config))) return;
+    // From its session on, a further Debug asks to stop it (`stopRunningInstances`).
+    const debugging = new Promise<void>((resolve) => {
+      stopWatching = useDebugRunSessions.subscribe((s) => {
+        if (s.serviceSessions.some((d) => d.config.id === config.id && d.status !== "terminated")) resolve();
+      });
+    });
+    launched = launch();
+    await Promise.race([launched.catch(() => {}), debugging]);
+  } finally {
+    stopWatching();
+    debugLaunching.delete(config.id);
+  }
+  await launched;
 }
 
 /** Resolves once the given sessions' processes exited (or after `timeoutMs`, unless `null`). */

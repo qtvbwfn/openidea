@@ -245,9 +245,17 @@ impl crate::Host {
     pub async fn refresh_project_trust(&self) -> IdeResult<()> {
         for project in self.projects().into_iter().filter(|p| !p.light) {
             let trusted = self.trust.window_trusted(&project.root).unwrap_or(false);
+            let roots = project.content_roots();
             let previous = project.trusted.swap(trusted, std::sync::atomic::Ordering::AcqRel);
             if previous == trusted {
                 continue;
+            }
+            // Maven reactor modules outside the project are content roots of a trusted project only.
+            if project.content_roots() != roots {
+                project.refresh_index_scope();
+                let p = project.clone();
+                tokio::task::spawn_blocking(move || p.refresh_repositories());
+                project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
             }
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.schedule();
@@ -310,6 +318,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "fs_delete"
             | "fs_entry_kind"
             | "fs_open_with_system"
+            // The user's own diff program (global settings) on the diff's two sides.
+            | "diff_external_tool"
             | "fs_probe"
             | "fs_read_dir"
             | "fs_read_image"
@@ -322,6 +332,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "doc_edit"
             | "doc_folding"
             | "doc_highlights"
+            | "doc_language"
             | "doc_open"
             | "doc_open_untitled"
             | "doc_open_virtual"
@@ -336,7 +347,6 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "doc_set_line_ending"
             | "doc_snapshot"
             | "doc_sync_from_disk"
-            | "doc_ui_mode"
             | "syntax_errors"
             | "syntax_expression_at"
             | "syntax_identifiers"
@@ -406,6 +416,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "settings_export"
             | "settings_get"
             | "settings_get_global"
+            | "settings_removed_theme"
             | "settings_import"
             | "settings_list_jetbrains_ides"
             | "settings_read_jetbrains"
@@ -497,6 +508,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "find_files_named"
             | "find_dirs"
             | "find_symbols"
+            | "find_symbols_named"
             | "mark_recent"
             | "remove_recent"
             | "recent_files"
@@ -543,9 +555,13 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "agent_registry_remove"
             | "agent_mcp_list"
             | "agent_mcp_save"
+            | "agent_mcp_save_json"
             | "agent_mcp_set_enabled"
             | "agent_mcp_remove"
             | "agent_mcp_import"
+            | "agent_mcp_discover_sources"
+            | "agent_mcp_import_selected"
+            | "agent_set_mcp_overrides"
             | "coverage_import"
             | "system_font_families"
             | "user_font_data"

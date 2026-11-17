@@ -38,7 +38,6 @@ import { confirm } from "@/workbench/messages";
 import {
   Button,
   Checkbox,
-  Chip,
   EmptyState,
   Icon,
   IconButton,
@@ -65,8 +64,8 @@ import { setChangesOptions, useChangesOptions } from "./changesOptions";
 import { ChangesResizer, useChangesWidthStyle } from "./ChangesResizer";
 import { Composer } from "./Composer";
 import { ReferencedText } from "./ReferenceChip";
+import { SessionAssets } from "./SessionAssets";
 import { selectionIn } from "./selection";
-import { SelectionToolbar } from "./SelectionToolbar";
 import { SubmitButton } from "./SubmitButton";
 import {
   canSend,
@@ -80,14 +79,28 @@ import {
   workTime,
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { McpPicker } from "./McpPicker";
 import { useEffortFocus } from "./effortFocus";
+import { useAgentFontZoomSurface } from "./fontZoom";
 import { findRanges, formatDuration, formatSentAt, isFindRangeShown } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
 import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
 import { useRevealedText } from "./reveal";
-import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
 import {
+  ACTIVITY_STATUS,
+  PLAYFUL_MIN_MS,
+  PLAYFUL_WORD_MS,
+  PLAYFUL_WORDS,
+  activityOf,
+  playfulIndex,
+  progressKey,
+  type Activity,
+} from "./workingStatus";
+import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
+import { FormCard } from "./FormCard";
+import {
+  asksInCard,
   commandPrefix,
   permissionDetails,
   permissionOption,
@@ -103,6 +116,7 @@ import {
   hasTaskTerminal,
   isBusy,
   providerIcon,
+  sessionKey,
   statusLabel,
   subagentStatusLabel,
   subagentTitle,
@@ -123,7 +137,6 @@ import {
   refreshChanges,
   rollbackChanges,
   scheduleChanges,
-  discardEphemeral,
   editQueued,
   forkTask,
   rerunFrom,
@@ -133,6 +146,7 @@ import {
   sendMessage,
   sendQueuedNow,
   setTaskConfig,
+  setTaskMcpOverrides,
   useAgentCommands,
   useAgents,
 } from "./store";
@@ -150,7 +164,6 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const entries = useAgents((s) => s.entries.get(id));
   // Grouping needs commits of the task's own: local checkouts keep the flat list.
   const isolation = useAgents((s) => s.tasks.get(id)?.isolation);
-  const ephemeral = useAgents((s) => s.ephemeral.has(id));
   const grouped = useChangesOptions((s) => s.groupByCommit) && isolation === "worktree";
   const sinceStart = useAgents((s) => s.changes.get(id));
   const review = useAgents((s) => s.groupedChanges.get(id));
@@ -211,6 +224,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const [inputFocus, setInputFocus] = useState(0);
   const { fitWindowWidth } = useAgentSettings();
   const sessionRoot = useRef<HTMLDivElement>(null);
+  const { fontZoom, zoomStyle } = useAgentFontZoomSurface(sessionRoot, sessionKey(id), docked, !!task);
   const canFocusInput = shown && !!task && task.status !== "archived" && !view;
   const session = useMemo<FocusedSession>(
     () => ({
@@ -243,7 +257,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
         changesOpen && !docked && styles.withChanges,
         fitWindowWidth && styles.fitWidth,
       )}
-      style={changesWidth}
+      style={{ ...changesWidth, ...zoomStyle }}
       onFocusCapture={() => shown && setFocusedSession(session)}
       onBlurCapture={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedSession() === session) {
@@ -251,22 +265,6 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
         }
       }}
     >
-      {ephemeral && (
-        <div className={styles.sideBanner}>
-          <Icon name="branch" size={13} />
-          <span className={styles.sideName}>
-            <T>Side conversation</T>
-          </span>
-          <span className={styles.sideHint}>
-            <T>Temporary and read-only: closing it discards the conversation and its context.</T>
-          </span>
-          <IconButton
-            icon="close"
-            title="Discard Side Conversation"
-            onClick={() => void discardEphemeral(id).catch(() => undefined)}
-          />
-        </div>
-      )}
       <div className={styles.conversation} hidden={docked && changesOpen}>
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
         <FoldedContent.Provider value={finding && shown}>
@@ -279,6 +277,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             onOpenSubagent={openSubagent}
             finding={finding && shown}
             findFocus={findFocus}
+            fontZoom={fontZoom}
             onCloseFind={() => setFinding(false)}
           />
         </FoldedContent.Provider>
@@ -399,41 +398,34 @@ function SessionStatus({
         showContextMenu(e, taskMenu([task]));
       }}
     >
-      <span className={styles.agent} title={`${providerName(task.provider)} · ${task.cwd}`}>
-        <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
-        <span className={styles.agentName}>
-          {providerName(task.provider)}
-          {/* The composer's model picker shows the model when the agent offers one. */}
-          {task.model && !pickedModel ? ` · ${task.model}` : ""}
-        </span>
-      </span>
-      {/* The same three facts as the new-task composer: project, checkout, branch. */}
-      <span className={styles.where}>
-        {projectName && (
-          <Chip icon="folder" title={projectRoot ?? undefined}>
-            {projectName}
-          </Chip>
+      {/* Where the task works, in one quiet line like the new-task page: project (in a workspace), branch, worktree. */}
+      <span className={styles.where} title={task.cwd}>
+        {project?.workspace && projectName && (
+          <span className={styles.fact}>
+            <Icon name="folder" size={13} />
+            <span className={styles.factText}>{projectName}</span>
+          </span>
         )}
-        <Chip icon={local ? "folder" : "branch"}>
-          <T>{local ? "Local checkout" : "New worktree"}</T>
-        </Chip>
         {branch && (
-          <>
-            {local && (
-              <span className={styles.note}>
-                <T>on</T>
-              </span>
-            )}
-            <Chip icon="branch" title={branch}>
-              {branch}
-            </Chip>
-          </>
+          <span className={styles.fact}>
+            <Icon name="branch" size={13} />
+            <span className={styles.factText}>{branch}</span>
+          </span>
         )}
+        {!local && (
+          <span className={styles.fact}>
+            <T>Worktree</T>
+          </span>
+        )}
+        {task.model && !pickedModel && <span className={styles.fact}>{task.model}</span>}
       </span>
-      <span className={styles.state}>
-        <T>{statusLabel(task.status)}</T>
-        {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
-      </span>
+      {/* Ready is the usual state: only the others are worth a word. */}
+      {task.status !== "ready" && (
+        <span className={styles.state}>
+          <T>{statusLabel(task.status)}</T>
+          {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
+        </span>
+      )}
       <span className={styles.state} role="status" aria-live="polite" aria-atomic="true">
         {effortAnnouncement ? tx("Effort: {level}").replace("{level}", effortAnnouncement) : ""}
       </span>
@@ -521,7 +513,7 @@ function Usage({ usage }: { usage: AgentUsage }) {
       <span className={styles.usageBar} aria-hidden>
         <span style={{ width: `${label.percent}%` }} />
       </span>
-      {label.short}
+      {`${label.percent}%`}
     </span>
   );
 }
@@ -599,9 +591,10 @@ function useOffscreenRows(
   visible: boolean,
   enabled: boolean,
   fitWindowWidth: boolean,
+  fontZoom: number,
 ) {
-  // The container width and column mode the marked rows were laid out at.
-  const measured = useRef<{ width: number; fitWindowWidth: boolean } | null>(null);
+  // The container width, column mode and font zoom the marked rows were laid out at.
+  const measured = useRef<{ width: number; fitWindowWidth: boolean; fontZoom: number } | null>(null);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -616,10 +609,15 @@ function useOffscreenRows(
       return;
     }
     if (!visible) return;
-    if (measured.current?.width === el.clientWidth && measured.current.fitWindowWidth === fitWindowWidth) return;
-    measured.current = { width: el.clientWidth, fitWindowWidth };
+    if (
+      measured.current?.width === el.clientWidth &&
+      measured.current.fitWindowWidth === fitWindowWidth &&
+      measured.current.fontZoom === fontZoom
+    )
+      return;
+    measured.current = { width: el.clientWidth, fitWindowWidth, fontZoom };
     unmark();
-  }, [ref, visible, enabled, fitWindowWidth]);
+  }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
   useEffect(() => {
     const el = ref.current;
     if (!el || !enabled || !visible) return;
@@ -642,8 +640,13 @@ function useOffscreenRows(
       });
     };
     const remeasure = () => {
-      if (measured.current?.width === el.clientWidth && measured.current.fitWindowWidth === fitWindowWidth) return;
-      measured.current = { width: el.clientWidth, fitWindowWidth };
+      if (
+        measured.current?.width === el.clientWidth &&
+        measured.current.fitWindowWidth === fitWindowWidth &&
+        measured.current.fontZoom === fontZoom
+      )
+        return;
+      measured.current = { width: el.clientWidth, fitWindowWidth, fontZoom };
       unmark();
     };
     remeasure();
@@ -664,7 +667,7 @@ function useOffscreenRows(
       rows.disconnect();
       resize.disconnect();
     };
-  }, [ref, visible, enabled, fitWindowWidth]);
+  }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
 }
 
 interface StreamProps {
@@ -677,6 +680,7 @@ interface StreamProps {
   finding: boolean;
   /** Bumped by Find in Conversation: focus the find field again. */
   findFocus: number;
+  fontZoom: number;
   onCloseFind: () => void;
 }
 
@@ -692,7 +696,17 @@ function scrollsInside(target: EventTarget | null, root: HTMLElement): boolean {
   return false;
 }
 
-function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
+function Stream({
+  loadError,
+  task,
+  entries,
+  subagent,
+  onOpenSubagent,
+  finding,
+  findFocus,
+  fontZoom,
+  onCloseFind,
+}: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
   const [openFolds] = useState(() => new Map<string, boolean>());
@@ -787,7 +801,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
   const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
-  useOffscreenRows(ref, visible, !finding, fitWindowWidth);
+  useOffscreenRows(ref, visible, !finding, fitWindowWidth, fontZoom);
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
@@ -956,9 +970,10 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
             className={clsx(styles.stream, selectableText)}
             tabIndex={-1}
             onWheel={(e) => {
+              if (e.defaultPrevented) return;
               markUserScroll();
-              if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
-              else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
+              if (e.deltaY < 0 && !e.ctrlKey && !e.metaKey) stopFollowing(e.target);
+              else if (e.deltaY > 0 && !e.ctrlKey && !e.metaKey) scrollingUp.current = false;
             }}
             onTouchStart={(e) => {
               touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
@@ -1076,7 +1091,6 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
             <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>
           {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
-          <SelectionToolbar streamRef={ref} task={task} subagent={!!subagent} />
         </div>
       </RevealFold.Provider>
     </OpenFolds.Provider>
@@ -1387,7 +1401,7 @@ function ThoughtEntry({
     if (working && open) onDiagramDrawn();
   }, [shown, working, open, onDiagramDrawn]);
   return (
-    <div className={styles.process}>
+    <div className={clsx(styles.process, styles.thoughtEntry)}>
       <Fold
         className={clsx(styles.thought, thinking === "auto" && working && styles.thoughtLive)}
         open={open}
@@ -1732,14 +1746,14 @@ function ImageStrip({ images, onRemove }: { images: AgentImage[]; onRemove?: (in
             <img className={styles.image} src={imageSrc(img)} alt={img.name ?? tx("Image")} />
           </button>
           {onRemove && (
-            <button
+            <IconButton
               type="button"
               className={styles.removeImage}
               aria-label={tx("Remove Image")}
               onClick={() => onRemove(i)}
-            >
-              <Icon name="close" size={10} />
-            </button>
+              icon="close"
+              size="small"
+            />
           )}
         </span>
       ))}
@@ -2033,12 +2047,15 @@ const ToolEntry = memo(function ToolEntry({
   );
   if (!entry.output)
     return (
-      <div className={styles.process}>
-        <div className={styles.tool}>{head}</div>
+      <div className={clsx(styles.process, styles.toolEntry)}>
+        <div className={styles.tool}>
+          <span className={styles.toolChevronSpacer} aria-hidden="true" />
+          {head}
+        </div>
       </div>
     );
   return (
-    <div className={styles.process}>
+    <div className={clsx(styles.process, styles.toolEntry)}>
       <Fold
         className={styles.toolDetails}
         open={liveTool(entry) || expandToolOutput}
@@ -2295,9 +2312,7 @@ function PermissionLine({ task, entry }: { task: AgentTask; entry: PermissionEnt
             ) : (
               <span className={styles.permissionDetail}>{shortTitle(task, detail)}</span>
             )}
-            {!entry.questions?.length && (
-              <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />
-            )}
+            {!asksInCard(entry) && <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />}
           </>
         )}
       </div>
@@ -2322,12 +2337,13 @@ const isRecommended = (label: string) => label.endsWith(RECOMMENDED_SUFFIX);
 
 const plainLabel = (label: string) => (isRecommended(label) ? label.slice(0, -RECOMMENDED_SUFFIX.length) : label);
 
-/** An open `AskUserQuestion` request, as a card above the composer; one question at a time. */
+/** An open `AskUserQuestion` request or agent form, as a card above the composer; one question at a time. */
 function QuestionCard({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const entry = entries?.find(
     (candidate): candidate is PermissionEntry =>
-      candidate.type === "permission" && !candidate.chosen && !!candidate.questions?.length,
+      candidate.type === "permission" && !candidate.chosen && asksInCard(candidate),
   );
+  if (entry?.form) return <FormCard key={entry.id} task={task} entry={entry} form={entry.form} />;
   return entry?.questions ? (
     <QuestionForm key={entry.id} task={task} entry={entry} questions={entry.questions} />
   ) : null;
@@ -2619,9 +2635,7 @@ function QuestionForm({
  */
 function Tray({ task, entries, children }: { task: AgentTask; entries: AgentEntry[] | null; children: ReactNode }) {
   const tx = useTx();
-  const pending = entries?.find(
-    (e): e is PermissionEntry => e.type === "permission" && !e.chosen && !e.questions?.length,
-  );
+  const pending = entries?.find((e): e is PermissionEntry => e.type === "permission" && !e.chosen && !asksInCard(e));
   const plan = entries?.findLast((e): e is Extract<AgentEntry, { type: "plan" }> => e.type === "plan");
   const [planOpen, setPlanOpen] = useState(false);
   const done = plan?.items.filter((i) => i.status === "completed").length ?? 0;
@@ -2685,25 +2699,79 @@ function WorkingRow({
     return (
       <div className={styles.working} role="status">
         <Spinner size={12} />
-        <T>{subagent.status === "needsInput" ? "Waiting for your answer…" : "Working…"}</T>
+        {subagent.status === "needsInput" ? (
+          <T>Waiting for your answer…</T>
+        ) : (
+          <WorkingLabel turn={entries ?? []} seed={subagent.startedMs ?? 0} />
+        )}
         {subagent.startedMs != null && <Elapsed since={subagent.startedMs} />}
       </div>
     );
   }
   if (task.status !== "running" && task.status !== "starting") return null;
-  if (entries?.some((e) => e.type === "permission" && !e.chosen && !e.questions?.length)) return null;
-  const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
+  if (entries?.some((e) => e.type === "permission" && !e.chosen && !asksInCard(e))) return null;
+  const userAt = entries?.findLastIndex((e) => e.type === "user") ?? -1;
+  const lastUser = userAt >= 0 ? (entries![userAt] as UserEntry) : undefined;
   return (
     <div className={styles.working} role="status">
       <Spinner size={12} />
       {task.retry ? (
         <Retrying retry={task.retry} />
+      ) : task.status === "starting" ? (
+        <T>Starting the agent…</T>
       ) : (
-        <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
+        <WorkingLabel turn={entries?.slice(userAt + 1) ?? []} seed={lastUser?.sentMs ?? 0} />
       )}
       {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
     </div>
   );
+}
+
+/**
+ * What the agent is doing, said by the activity's playful words in turns (the user's own, else the
+ * built-in ones) from the start, or once it has reported nothing new for the user's quiet time;
+ * screen readers hear only the fact. A word stays its full time while it still fits what the agent
+ * does, and a little while when it no longer does, so the row never flickers.
+ */
+function WorkingLabel({ turn, seed }: { turn: AgentEntry[]; seed: number }) {
+  const tx = useTx();
+  const { playfulStatus, playfulAfterSeconds, playfulWords } = useAgentSettings();
+  const now = useNow(1000);
+  const key = progressKey(turn);
+  const [progress, setProgress] = useState({ key, at: now });
+  if (progress.key !== key) setProgress({ key, at: now });
+  // The word on screen, and how many the turn has shown, so the next one continues the order.
+  const [playful, setPlayful] = useState<{ shown: number; word: PlayfulWord | null }>({ shown: 0, word: null });
+  const activity = activityOf(turn);
+  const kind = activity ?? "working";
+  const fact = tx(ACTIVITY_STATUS[kind]);
+  const own = playfulWords[kind];
+  const words = own ?? PLAYFUL_WORDS[kind];
+  const due = words.length > 0 && (!activity || now - progress.at >= playfulAfterSeconds * 1000);
+  const current = playful.word;
+  const fits = due && current?.kind === kind;
+  const stays = current && playfulStatus && now - current.since < (fits ? PLAYFUL_WORD_MS : PLAYFUL_MIN_MS);
+  let next = playful;
+  if (!stays && playfulStatus && due) {
+    const text = words[playfulIndex(words.length, seed, playful.shown)]!;
+    next = { shown: playful.shown + 1, word: { text, kind, own: !!own, since: now } };
+  } else if (!stays && current) next = { shown: playful.shown, word: null };
+  if (next !== playful) setPlayful(next);
+  if (!next.word) return fact;
+  return (
+    <>
+      <span aria-hidden>{next.word.own ? next.word.text : tx(next.word.text)}</span>
+      <span className={styles.srOnly}>{fact}</span>
+    </>
+  );
+}
+
+/** A playful word for `kind` on screen since `since`: the user's own as written, else a built-in one to translate. */
+interface PlayfulWord {
+  text: string;
+  kind: Activity;
+  own: boolean;
+  since: number;
 }
 
 /** The approval the agent waits for, with its answers on 1, 2, 3… */
@@ -2775,6 +2843,8 @@ function SessionComposer({
   const project = useProject((s) => s.project);
   const composer = useAgents((s) => s.composers.get(task.id)) ?? emptyDraft();
   const [sending, setSending] = useState(false);
+  const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
+  const [assetFocus, setAssetFocus] = useState(0);
   const agentCommands = useAgentCommands(task.provider, task.id, task.commands);
   const busy = isBusy(task.status);
   // ↑ recalls this conversation's messages, newest first.
@@ -2810,20 +2880,11 @@ function SessionComposer({
         body: String(e),
       }),
     );
+  const openMcp = () => setMcpOpenRequest((n) => n + 1);
   const shown = useEditorShown();
   const effortAnnouncement = useEffortFocus(focusRoot, shown && task.status !== "archived", task.config, setOption);
   return (
     <div className={styles.composerArea}>
-      <SessionStatus
-        task={task}
-        entries={entries}
-        head={head}
-        changes={changes}
-        commits={commits}
-        changesOpen={changesOpen}
-        onToggleChanges={onToggleChanges}
-        effortAnnouncement={effortAnnouncement}
-      />
       {task.status === "archived" && (
         <div className={styles.banner}>
           <span className={styles.bannerText}>
@@ -2841,9 +2902,10 @@ function SessionComposer({
         <BackgroundTasks task={task} />
         {task.queue.length > 0 && <Queue task={task} />}
       </Tray>
+      <SessionAssets task={task} entries={entries} head={head} onFocusComposer={() => setAssetFocus((n) => n + 1)} />
       <Composer
         id={task.id}
-        focusRequest={focusRequest}
+        focusRequest={focusRequest + assetFocus}
         placeholder={
           !busy
             ? "Reply to the agent"
@@ -2862,8 +2924,33 @@ function SessionComposer({
         config={task.config}
         onConfig={setOption}
         onSubmit={send}
+        onOpenMcp={openMcp}
         disabled={task.status === "archived"}
-        toolbar={<ConfigPickers config={task.config} onChange={setOption} />}
+        addMenu={[
+          { id: "mcp", label: "MCP Servers…", icon: "plugin", disabled: task.status === "archived", run: openMcp },
+        ]}
+        toolbar={
+          <>
+            <ConfigPickers config={task.config} onChange={setOption} />
+            <McpPicker
+              provider={task.provider}
+              overrides={task.mcpOverrides}
+              disabled={task.status === "archived"}
+              busy={busy}
+              openRequest={mcpOpenRequest}
+              hideTrigger
+              onChange={(next) =>
+                void setTaskMcpOverrides(task.id, next).catch((e: unknown) =>
+                  notifications().notify({
+                    level: "error",
+                    title: "Couldn't change the setting",
+                    body: String(e),
+                  }),
+                )
+              }
+            />
+          </>
+        }
         actions={
           <>
             {busy && <IconButton icon="stop" title="Stop" onClick={() => void cancelTask(task.id)} />}
@@ -2876,6 +2963,16 @@ function SessionComposer({
             />
           </>
         }
+      />
+      <SessionStatus
+        task={task}
+        entries={entries}
+        head={head}
+        changes={changes}
+        commits={commits}
+        changesOpen={changesOpen}
+        onToggleChanges={onToggleChanges}
+        effortAnnouncement={effortAnnouncement}
       />
     </div>
   );

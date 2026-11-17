@@ -26,6 +26,17 @@ export const vscodeMacos: Record<string, string[]> = {
   "db.goToColumn": ["Meta+Shift+O"],
   "db.submitChanges": ["Meta+Enter"],
   "db.revertChanges": ["Meta+Alt+Z"],
+  // Data editor commands: VS Code has no counterpart.
+  "db.reloadPage": [],
+  "db.firstPage": [],
+  "db.previousPage": [],
+  "db.nextPage": [],
+  "db.lastPage": [],
+  "db.addRow": [],
+  "db.deleteRows": [],
+  "db.restoreRows": [],
+  "db.exportData": [],
+  "db.editCell": [],
   "navigate.relatedSymbol": [],
   "navigate.nextError": ["F8"],
   "navigate.prevError": ["Shift+F8"],
@@ -177,6 +188,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "refactor.inline": [],
   "refactor.move": [],
   "refactor.safeDelete": [],
+  "refactor.extractInterface": [],
   "refactor.pullMembersUp": [],
   "refactor.pushMembersDown": [],
 
@@ -225,6 +237,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "project.paste": ["Meta+V"],
   "project.copyAbsolutePath": ["Meta+Alt+C"],
   "project.open": ["Meta+Down"],
+  // Explorer: Open to the Side.
+  "project.openInRightSplit": ["Meta+Enter"],
   "project.reloadFromDisk": [],
   "project.expandAll": [],
   "project.collapseAll": [],
@@ -350,6 +364,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "diff.nextFile": [],
   "diff.prevFile": [],
   "diff.showSettings": [],
+  "diff.focusOppositePane": [],
   "diff.prevDifference": ["Shift+F7"],
   "diff.jumpToSource": [],
   // HTTP Client / Database console: run the request or statement at the caret.

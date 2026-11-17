@@ -1,7 +1,7 @@
 import { showShelfDiff } from "./shelf";
 import { commitRepo } from "./multiRoot";
 /** VCS actions (ids match keymaps/intellij-macos.ts where bound). */
-import { registerActions, type Action } from "@/platform/actions";
+import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { activeEditor, editorsFor } from "@/editor/api";
 import { Menu, type MenuItem } from "@/ui";
@@ -41,7 +41,7 @@ import {
 import { buildChangeTree, changeFileNodes, changeGroupPaths, type ChangeNode } from "./changes";
 import { useChangelists } from "./changelists";
 import { openDialog } from "./dialogs";
-import { gotoChange, rollbackSelectedLines } from "./gutter";
+import { gotoChange, hunksInSelection, rollbackSelectedLines } from "./gutter";
 import { openLocalHistory } from "./localHistoryKind";
 import { showSelectionHistory } from "./selectionHistoryKind";
 import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
@@ -65,7 +65,6 @@ import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
 import { hasFileHistory, showCurrentRevision, trackFileHistory } from "./fileRevisions";
-import { compareWithFileRevision } from "./FileRevisionChooser";
 
 const VCS = "vcsAvailable";
 const IN_COMMIT_WINDOW = "vcsAvailable && activeToolWindow == commit";
@@ -412,7 +411,7 @@ export function registerVcsActions(): () => void {
       when: VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
       // In the Git Log's changed files it shows the commit's diff instead.
-      keyWhen: "!editorTextFocus && !vcsLogChangesFocus",
+      keyWhen: "!editorTextFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
       run: async ({ arg, ctx }) => {
         if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =
@@ -433,6 +432,7 @@ export function registerVcsActions(): () => void {
           useCommit.getState().groupByStaging,
           undefined,
           useCommit.getState().groupByRepo,
+          useCommit.getState().showUnversionedSeparately,
         );
         // The modal interface has one front diff window (#1863): a file with its group
         // as the F7 chain, or several selected files as the chain.
@@ -496,7 +496,10 @@ export function registerVcsActions(): () => void {
       icon: "diff",
       when: VCS,
       enabled: ({ arg }) => hasFileHistory(argPath(arg) ?? maybeEditorService()?.activePath()),
-      run: ({ arg }) => compareWithFileRevision(argPath(arg) ?? maybeEditorService()?.activePath()),
+      run: ({ arg }) => {
+        const path = argPath(arg) ?? maybeEditorService()?.activePath();
+        void import("./FileRevisionChooser").then((m) => m.compareWithFileRevision(path));
+      },
     },
     {
       id: "vcs.nextChange",
@@ -522,6 +525,27 @@ export function registerVcsActions(): () => void {
         if (diff) return diff.prev();
         const ed = activeEditor();
         if (ed) gotoChange(ed.view, -1);
+      },
+    },
+    {
+      // The diff of the file at the changed lines under the caret or selection (the change marker popup's Show Diff).
+      id: "vcs.showDiffForLines",
+      title: "Show Diff for Lines",
+      category: "Git",
+      icon: "diff",
+      when: VCS,
+      enabled: () => {
+        const ed = activeEditor();
+        return !!ed && hunksInSelection(ed.view.state).length > 0;
+      },
+      run: () => {
+        const ed = activeEditor();
+        const [hunk] = ed ? hunksInSelection(ed.view.state) : [];
+        if (!ed || !hunk) return;
+        const { state } = ed.view;
+        const head = state.selection.main.head;
+        const line = hunk.from <= head && head <= hunk.to ? state.doc.lineAt(head).number - 1 : hunk.start;
+        return executeAction("vcs.showDiff", { path: ed.ctx.path, line });
       },
     },
     {

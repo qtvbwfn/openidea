@@ -20,6 +20,8 @@ pub struct AppInfo {
     pub data_dir: ide_core::IpcPath,
     /// Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges.
     pub wayland: bool,
+    /// Caption buttons of the frameless title bar: the desktop's layout on Linux.
+    pub window_buttons: ide_core::platform::WindowButtonLayout,
 }
 
 pub use ide_host::ops::project::ProjectInfo;
@@ -38,6 +40,12 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
         wayland: crate::linux_window_state::is_wayland(),
         #[cfg(not(target_os = "linux"))]
         wayland: false,
+        #[cfg(target_os = "linux")]
+        window_buttons: crate::linux_window_state::decoration_layout()
+            .and_then(|layout| ide_core::platform::WindowButtonLayout::from_gtk_decoration_layout(&layout))
+            .unwrap_or_default(),
+        #[cfg(not(target_os = "linux"))]
+        window_buttons: Default::default(),
     }
 }
 
@@ -207,6 +215,16 @@ pub fn settings_get(window: Window, state: State<'_, AppState>) -> Settings {
 #[specta::specta]
 pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
     state.host.with_proxy_password(state.global_settings.effective())
+}
+
+/// The removed built-in theme id a settings file of this window still names, if any:
+/// `settings_get` reports the built-in that stands in for it, so the notice about
+/// a theme that moved to a plugin can address the installs it concerns.
+#[tauri::command]
+#[specta::specta]
+pub fn settings_removed_theme(window: Window, state: State<'_, AppState>) -> Option<String> {
+    state.note_ipc();
+    ide_host::ops::project::settings_removed_theme(&state.host, window.label())
 }
 
 /// `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project

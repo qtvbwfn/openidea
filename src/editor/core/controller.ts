@@ -5,6 +5,7 @@
  */
 import { writeClipboardText } from "@/platform/clipboard";
 import { pasteEditorClipboard } from "./cm/clipboard";
+import { saveOnBlur } from "./saveOnBlur";
 import type { ReactNode } from "react";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
@@ -331,12 +332,20 @@ export class EditorController implements SlotHost {
     this.disposers.push(
       useTabs.subscribe((s, previous) => {
         const open = openKeys(s);
+        const live = new Set<string>();
+        for (const pane of Object.values(s.panes)) for (const tab of pane.tabs) live.add(tab.id);
         const closed = new Map<string, EditorInput>();
+        const closedTabs: Tab[] = [];
         for (const pane of Object.values(previous.panes))
-          for (const tab of pane.tabs) if (!open.has(tab.input.key)) closed.set(tab.input.key, tab.input);
-        if (!this.replacingProject)
-          for (const input of closed.values())
-            useContributions.getState().editorKinds.get(input.kind)?.onClose?.(input);
+          for (const tab of pane.tabs) {
+            if (!live.has(tab.id)) closedTabs.push(tab);
+            if (!open.has(tab.input.key)) closed.set(tab.input.key, tab.input);
+          }
+        if (!this.replacingProject) {
+          const kinds = useContributions.getState().editorKinds;
+          for (const tab of closedTabs) kinds.get(tab.input.kind)?.onTabClose?.(tab.id, tab.input);
+          for (const input of closed.values()) kinds.get(input.kind)?.onClose?.(input);
+        }
         const prev = prevTabs;
         prevTabs = s;
         if (
@@ -800,19 +809,7 @@ export class EditorController implements SlotHost {
     setContext("editorTextFocus", false);
     if (!this.autoSave()) return;
     const save = () => void slot.model.save("auto").catch(() => {});
-    if (typeof document === "undefined") return save();
-    // A popup (intentions, completion, …) belongs to the editor: saving under it would change
-    // the text (save cleanup) its items were computed for. Save once focus leaves it elsewhere.
-    setTimeout(() => {
-      if (slot.view?.hasFocus) return;
-      if (!inPopup(document.activeElement)) return save();
-      const onFocusIn = (e: FocusEvent) => {
-        if (inPopup(e.target)) return;
-        document.removeEventListener("focusin", onFocusIn);
-        if (!slot.view?.hasFocus) save();
-      };
-      document.addEventListener("focusin", onFocusIn);
-    });
+    saveOnBlur(() => !!slot.view?.hasFocus, save);
   }
 
   onSelection(slot: EditorSlot, navigatedFrom?: { line: number; col: number }) {
@@ -901,6 +898,7 @@ export class EditorController implements SlotHost {
       },
       { kind: "action", action: "editor.toggleColumnSelection", label: "Column Selection Mode" },
       { kind: "separator" },
+      { kind: "action", action: "find.usages", label: "Find Usages" },
       // IDEA's editor popup: secondary commands live in submenus.
       {
         label: "Go To",
@@ -909,9 +907,9 @@ export class EditorController implements SlotHost {
           { kind: "action", action: "navigate.implementation", label: "Implementation(s)" },
           { kind: "action", action: "navigate.typeDeclaration", label: "Type Declaration" },
           { kind: "action", action: "navigate.superMethod", label: "Super Method" },
+          { kind: "action", action: "navigate.relatedSymbol", label: "Related Symbol…" },
           { kind: "action", action: "navigate.gotoTest", label: "Test" },
           { kind: "separator" },
-          { kind: "action", action: "find.usages", label: "Find Usages" },
           { kind: "action", action: "navigate.callHierarchy", label: "Call Hierarchy" },
           { kind: "action", action: "navigate.typeHierarchy", label: "Type Hierarchy" },
         ],
@@ -940,6 +938,7 @@ export class EditorController implements SlotHost {
           { kind: "action", action: "refactor.extractVariable" },
           { kind: "action", action: "refactor.extractConstant" },
           { kind: "action", action: "refactor.extractMethod" },
+          { kind: "action", action: "refactor.extractInterface" },
           { kind: "action", action: "refactor.inline" },
           { kind: "action", action: "refactor.pullMembersUp" },
           { kind: "action", action: "refactor.pushMembersDown" },
@@ -1059,11 +1058,33 @@ export class EditorController implements SlotHost {
     this.nav.update({ path: slot.model.path, ...loc }, navigation);
   }
 
+  /**
+   * The place a navigation leaves: the text editor's caret, or a tab showing no text editor
+   * (a diff) as a whole, so Back returns to it as IDEA does.
+   */
+  private recordLeaving() {
+    if (this.navSuppress > 0) return;
+    if (this.activeSlot) return this.recordNav(this.activeSlot);
+    const input = this.activeInput();
+    if (!input?.path || isTextInput(input)) return;
+    const kind = useContributions.getState().editorKinds.get(input.kind);
+    const place = kind?.navigationInput?.(input) ?? input;
+    this.nav.update({ path: input.path, line: 0, col: 0, input: place }, true);
+  }
+
+  /** Whether the active tab is the current place (a tab place, as a text editor's records itself). */
+  private showsCurrentPlace(): boolean {
+    const key = this.nav.current?.input?.key;
+    return !!key && this.activeInput()?.key === key;
+  }
+
   async navigateTo(loc: NavigationLocation | null) {
     if (!loc) return;
     this.navSuppress++;
     try {
-      await this.openFile(loc.path, { selection: { line: loc.line, col: loc.col }, focus: true });
+      // At the place recorded on leaving it (a diff at its caret): a background tab shows afresh.
+      if (loc.input) await this.openInput(loc.input, { focus: true });
+      else await this.openFile(loc.path, { selection: { line: loc.line, col: loc.col }, focus: true });
     } finally {
       this.navSuppress--;
       if (this.activeSlot) this.recordNav(this.activeSlot);
@@ -1071,7 +1092,11 @@ export class EditorController implements SlotHost {
   }
 
   back() {
-    if (this.activeSlot) this.recordNav(this.activeSlot);
+    const slot = this.activeSlot;
+    if (slot && !slot.disposed) this.recordNav(slot);
+    // Nothing shows the current place (its last tab was closed, or another tab is active):
+    // going back returns to it first, as in IDEA.
+    else if (!this.showsCurrentPlace()) return this.navigateTo(this.nav.current);
     return this.navigateTo(this.nav.back());
   }
 
@@ -1140,7 +1165,7 @@ export class EditorController implements SlotHost {
 
   async openFile(path: string, o: OpenOptions = {}): Promise<void> {
     // The place left behind, as it is now (a preview may have scrolled since it was recorded).
-    if (this.navSuppress === 0 && this.activeSlot) this.recordNav(this.activeSlot);
+    this.recordLeaving();
     return this.openFileRequest(path, o, this.openingGeneration(o));
   }
 
@@ -1341,6 +1366,7 @@ export class EditorController implements SlotHost {
           preview,
           activate,
           preservePreview: !activate,
+          keepPreview: (t) => !isTextInput(t.input),
           ...(tabs.openAtEnd ? { index: s.panes[paneId]?.tabs.length ?? 0 } : {}),
         });
         s = r.state;
@@ -1540,6 +1566,14 @@ export class EditorController implements SlotHost {
       Object.values(initial.panes).flatMap((p) => p.tabs.filter((t) => !remainingIds.has(t.id)).map((t) => t.id)),
     );
     const emptyPanes = paneIds(initial).filter((id) => !planned.panes[id] && !initial.panes[id]?.tabs.length);
+    // Closing the active diff leaves it as a place, so Back reopens it.
+    const active = this.activeInput();
+    if (
+      active &&
+      !isTextInput(active) &&
+      Object.values(initial.panes).some((p) => p.tabs.some((t) => targets.has(t.id) && t.input.key === active.key))
+    )
+      this.recordLeaving();
     return this.enqueueRemoval(async () => {
       if (generation !== this.projectGeneration || this.closeSession) return false;
       const prepared: CustomDocument[] = [];
@@ -1979,13 +2013,6 @@ export class EditorController implements SlotHost {
     return useTabs.getState().panes[paneId]?.tabs.find((t) => t.id === tabId)?.input ?? null;
   }
 
-  /** The pane showing a tab with this input key, if any (for anchoring "open beside it"). */
-  paneOf(key: string): string | null {
-    for (const [paneId, pane] of Object.entries(useTabs.getState().panes))
-      if (pane.tabs.some((t) => t.input.key === key)) return paneId;
-    return null;
-  }
-
   closePath(path: string): Promise<boolean> {
     return this.removeGuarded((s) => {
       const keys = new Set<string>();
@@ -2338,8 +2365,4 @@ let controller: EditorController | null = null;
 
 export function editorController(): EditorController {
   return (controller ??= new EditorController());
-}
-
-function inPopup(target: EventTarget | null): boolean {
-  return target instanceof Element && !!target.closest("[data-popup]");
 }

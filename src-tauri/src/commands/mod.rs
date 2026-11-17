@@ -35,6 +35,7 @@ pub mod lsp;
 pub mod mcp;
 pub mod nav;
 pub mod notebook;
+pub mod notification;
 pub mod perf;
 pub mod plugin;
 pub mod profiler;
@@ -45,6 +46,7 @@ pub mod sdk;
 pub mod search;
 pub mod spell;
 pub mod ssh;
+pub mod stream_trace;
 pub mod syntax;
 pub mod term;
 pub mod tools;
@@ -112,6 +114,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::languages,
         app::settings_get,
         app::settings_get_global,
+        app::settings_removed_theme,
         app::settings_set,
         app::settings_export,
         app::settings_import,
@@ -135,9 +138,14 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_registry_remove,
         agent::agent_mcp_list,
         agent::agent_mcp_save,
+        agent::agent_mcp_save_json,
         agent::agent_mcp_set_enabled,
         agent::agent_mcp_remove,
         agent::agent_mcp_import,
+        agent::agent_mcp_discover_sources,
+        agent::agent_mcp_import_selected,
+        agent::agent_mcp_test,
+        agent::agent_set_mcp_overrides,
         agent::agent_commands,
         agent::agent_entries,
         agent::agent_create,
@@ -148,7 +156,6 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_send_queued_now,
         agent::agent_set_config,
         agent::agent_fork,
-        agent::agent_create_ephemeral,
         agent::agent_rollback,
         agent::agent_probe,
         agent::agent_cancel,
@@ -198,6 +205,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         clipboard::clipboard_has_image,
         clipboard::clipboard_image,
         clipboard::clipboard_set_file_list,
+        notification::show_system_notification,
         fonts::system_font_families,
         doc::doc_open,
         doc::doc_open_virtual,
@@ -209,7 +217,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         doc::doc_save_all,
         doc::doc_sync_from_disk,
         doc::doc_snapshot,
-        doc::doc_ui_mode,
+        doc::doc_language,
         doc::doc_set_encoding,
         doc::doc_set_bom,
         doc::doc_set_line_ending,
@@ -245,10 +253,12 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::index_status,
         nav::index_file_extensions,
         nav::spring_route_sources,
+        nav::cucumber_sources,
         nav::find_files,
         nav::find_files_named,
         nav::find_dirs,
         nav::find_symbols,
+        nav::find_symbols_named,
         nav::mark_recent,
         nav::recent_files,
         nav::remove_recent,
@@ -277,6 +287,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_goto,
         lsp::lsp_implementations,
         lsp::lsp_goto_implementation,
+        lsp::lsp_implementation_locations,
         lsp::lsp_virtual_document,
         lsp::lsp_can_download_sources,
         lsp::lsp_library_sources,
@@ -292,6 +303,13 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_rename,
         lsp::lsp_hierarchy_members,
         lsp::lsp_hierarchy_refactor,
+        lsp::lsp_signature_info,
+        lsp::lsp_change_signature,
+        lsp::lsp_extract_interface_info,
+        lsp::lsp_extract_interface,
+        lsp::lsp_java_move_destinations,
+        lsp::lsp_java_source_types,
+        lsp::lsp_java_move,
         lsp::lsp_format,
         lsp::lsp_inlay_hints,
         lsp::lsp_semantic_tokens,
@@ -358,6 +376,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_conflict_versions,
         vcs::vcs_diff_text,
         vcs::vcs_diff_hunks,
+        vcs::diff_external_tool,
         vcs::vcs_stage_hunks,
         vcs::vcs_clone,
         vcs::vcs_init,
@@ -383,6 +402,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_has_hook,
         vcs::vcs_merge_base,
         vcs::vcs_create_patch,
+        vcs::vcs_pending_patch,
         vcs::vcs_patch_preview,
         vcs::vcs_apply_patch,
         vcs::vcs_shelve,
@@ -484,6 +504,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         sdk::sdk_python_interpreter,
         sdk::sdk_python_effective,
         sdk::sdk_php_effective,
+        sdk::sdk_jdk_at,
         sdk::sdk_container_python,
         sdk::sdk_container_python_refresh,
         sdk::sdk_php_xdebug,
@@ -548,6 +569,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_data_breakpoint_info,
         debug::debug_attachable_processes,
         debug::debug_free_port,
+        debug::debug_unity_processes,
         debug::debug_listen_for_jvm,
         debug::debug_redefine_classes,
         debug::debug_jvm_memory_classes,
@@ -572,6 +594,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         heap::debug_heap_compare,
         heap::debug_heap_save,
         heap::debug_heap_close,
+        stream_trace::debug_stream_chains,
+        stream_trace::debug_stream_trace,
+        stream_trace::debug_stream_trace_abort,
         plugin::plugin_subscribe,
         plugin::plugin_list,
         plugin::plugin_set_enabled,
@@ -763,5 +788,11 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         db::db_apply_edits,
         db::db_console_path,
         db::db_consoles,
+        db::db_tool_installs,
+        db::db_tool_version,
+        db::db_tool_preview,
+        db::db_dump_kind,
+        db::db_run_tool,
+        db::db_server_version,
     ])
 }

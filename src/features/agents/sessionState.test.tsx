@@ -22,6 +22,7 @@ import { useChangesOptions } from "./changesOptions";
 import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
 import { focusedSession } from "./sessionFocus";
+import { PLAYFUL_MIN_MS, PLAYFUL_WORD_MS, PLAYFUL_WORDS } from "./workingStatus";
 import styles from "./Session.module.css";
 import chipStyles from "./ReferenceChip.module.css";
 import { caretOf, textOf, typeIn } from "./composerTesting";
@@ -484,8 +485,127 @@ describe("turn folding", () => {
     // The turn isn't over: its latest message is no final reply yet.
     expect(stream().querySelector(`.${styles.agentMessage} > .${styles.messageFooter}`)).toBeNull();
     // What the agent is doing ends the conversation, below its latest output.
-    const working = within(stream()).getByText("Working…").closest(`.${styles.working}`);
+    const working = stream().querySelector(`.${styles.working}`);
+    expect(working).toHaveRole("status");
     expect(stream().lastElementChild).toBe(working);
+  });
+});
+
+describe("working status", () => {
+  const running = (entries: AgentEntry[]) => {
+    backend.entries.set("A", [
+      { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: null },
+      ...entries,
+    ]);
+    useAgents.setState({
+      entries: new Map(backend.entries),
+      tasks: new Map(useAgents.getState().tasks).set("A", {
+        ...useAgents.getState().tasks.get("A")!,
+        status: "running",
+      }),
+    });
+  };
+  const playful = (status: HTMLElement) => status.querySelector("[aria-hidden]")?.textContent ?? null;
+  const playfulOn = (agents: object = {}) =>
+    useProject.setState({ settings: { agents: { playfulStatus: true, ...agents } } as never });
+
+  it("says plainly what the agent does by default", async () => {
+    vi.useFakeTimers();
+    running([tool("one", { status: "running" })]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS * 2));
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    expect(playful(status)).toBeNull();
+    expect(status).toHaveTextContent("Reading…");
+  });
+
+  it("is playful from the start, holds each word while the work goes on, and turns to the new work's words", async () => {
+    vi.useFakeTimers();
+    playfulOn();
+    running([tool("one", { status: "running" })]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    const word = playful(status);
+    expect(PLAYFUL_WORDS.reading).toContain(word);
+    // Screen readers still hear the fact.
+    expect(status.querySelector(`.${styles.srOnly}`)).toHaveTextContent("Reading…");
+
+    // More of the same work keeps the word its full time.
+    running([tool("one", { status: "running" }), tool("two", { status: "running" })]);
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS - 1000));
+    expect(playful(status)).toBe(word);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    const second = playful(status);
+    expect(PLAYFUL_WORDS.reading.filter((w) => w !== word)).toContain(second);
+
+    // New work leaves the word a moment, then says the new work playfully too.
+    running([tool("one", { status: "running" }), { type: "agent", text: "Found it" }]);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(playful(status)).toBe(second);
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_MIN_MS - 1000));
+    expect(PLAYFUL_WORDS.writing).toContain(playful(status));
+    expect(status.querySelector(`.${styles.srOnly}`)).toHaveTextContent("Writing…");
+  });
+
+  it("with a quiet time, is factual until the agent reports nothing new for it, and again on progress", async () => {
+    vi.useFakeTimers();
+    playfulOn({ playfulAfterSeconds: 10 });
+    running([tool("one", { status: "running" })]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    expect(status).toHaveTextContent("Reading…");
+    expect(playful(status)).toBeNull();
+
+    await act(() => vi.advanceTimersByTimeAsync(9000));
+    expect(playful(status)).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    const word = playful(status);
+    expect(PLAYFUL_WORDS.reading).toContain(word);
+
+    // Progress right after a word appeared leaves it a moment before the fact returns.
+    running([tool("one", { status: "running" }), { type: "agent", text: "Found it" }]);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(playful(status)).toBe(word);
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_MIN_MS - 1000));
+    expect(playful(status)).toBeNull();
+    expect(status).toHaveTextContent("Writing…");
+  });
+
+  it("keeps each word its full time however soon the status turns playful", async () => {
+    vi.useFakeTimers();
+    playfulOn({ playfulAfterSeconds: 1 });
+    running([tool("one", { status: "running" })]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    const word = playful(status);
+    expect(PLAYFUL_WORDS.reading).toContain(word);
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS - 1000));
+    expect(playful(status)).toBe(word);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(PLAYFUL_WORDS.reading.filter((w) => w !== word)).toContain(playful(status));
+  });
+
+  it("shows the user's own words of the activity, and none where they left the list empty", async () => {
+    vi.useFakeTimers();
+    playfulOn({ playfulWords: { reading: ["Squinting really hard…"], working: [] } });
+    running([]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    // Nothing reported yet is `working`, whose list the user emptied.
+    expect(playful(status)).toBeNull();
+    expect(status).toHaveTextContent("Working…");
+
+    running([tool("one", { status: "running" })]);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(playful(status)).toBe("Squinting really hard…");
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS));
+    expect(playful(status)).toBe("Squinting really hard…");
   });
 });
 
@@ -1340,6 +1460,68 @@ describe("a pending AskUserQuestion", () => {
   });
 });
 
+describe("a pending agent form", () => {
+  const form = {
+    type: "permission" as const,
+    id: 12,
+    title: "How should I refactor?",
+    chosen: null,
+    options: [{ id: "decline", name: "Decline", kind: "reject_once" }],
+    form: {
+      fields: [
+        {
+          name: "strategy",
+          title: "Strategy",
+          required: true,
+          kind: "choice" as const,
+          options: [
+            { value: "safe", label: "Conservative", description: "Small steps" },
+            { value: "bold", label: "Aggressive" },
+          ],
+        },
+        { name: "count", title: "Files", kind: "integer" as const, min: 1, max: 5 },
+        { name: "tests", title: "Run tests", kind: "boolean" as const },
+      ],
+    },
+  };
+
+  const open = async () => {
+    backend.entries.set("A", [form]);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    return screen.findByRole("form", { name: "How should I refactor?" });
+  };
+
+  it("sends the values once every required field is valid", async () => {
+    const card = await open();
+    const submit = within(card).getByRole("button", { name: "Submit" });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.click(within(card).getByRole("radio", { name: /^Aggressive/ }));
+    expect(submit).toHaveProperty("disabled", false);
+    const files = within(card).getByRole("spinbutton", { name: /^Files/ });
+    fireEvent.change(files, { target: { value: "9" } });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.change(files, { target: { value: "3" } });
+    fireEvent.click(within(card).getByRole("checkbox", { name: /^Run tests/ }));
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(backend.answers).toEqual([
+        ["A", 12, JSON.stringify({ strategy: ["bold"], count: ["3"], tests: ["true"] })],
+      ]),
+    );
+  });
+
+  it("declines with Decline and cancels with Escape", async () => {
+    const card = await open();
+    fireEvent.click(within(card).getByRole("button", { name: "Decline" }));
+    await waitFor(() => expect(backend.answers).toEqual([["A", 12, "decline"]]));
+    backend.answers = [];
+    fireEvent.keyDown(within(card).getByRole("radio", { name: /^Conservative/ }), { key: "Escape" });
+    await waitFor(() => expect(backend.answers).toEqual([["A", 12, null]]));
+  });
+});
+
 describe("a pending permission request above the composer", () => {
   const command = 'python3 -c \'from pathlib import Path\np = Path("note.txt")\np.write_text("one\\ntwo")\'';
   const options = [
@@ -1834,7 +2016,9 @@ describe("meters in the task header", () => {
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
     const usage = screen.getByLabelText(/^Context /);
-    expect(usage).toHaveTextContent("24k/200k (12%)");
+    // The bar and percent show; the counts are in its label and tooltip.
+    expect(usage).toHaveTextContent("12%");
+    expect(usage).toHaveAccessibleName(/24k\/200k \(12%\)/);
     expect(usage.querySelector(`.${styles.usageBar} span`)).toHaveStyle({
       width: "12%",
     });

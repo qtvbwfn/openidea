@@ -128,9 +128,11 @@ pub fn run_command() -> Tool {
         &format!(
             "Runs a shell command line in a new or reused tab of OpenIDEA's Run tool window, with the shell of \
 Settings › Tools › Terminal. The user is asked first (unless the IDE runs tools without \
-confirmation). Waits up to `timeout` milliseconds (default {RUN_TIMEOUT_MS}) for the command to finish; a command \
-still running then keeps running, and `wait_for_run`, `read_run_output`, `get_run_status`, `send_run_input` and \
-`stop_run` follow it up by name. Returns the tab's status (`state`: starting, running, stopping, succeeded, failed, \
+confirmation). Waits up to `timeout` milliseconds (default {RUN_TIMEOUT_MS}) for the command to finish, or until its \
+output matches `pattern`; a command still running then keeps running, and `wait_for_run`, `read_run_output`, \
+`get_run_status`, `send_run_input` and `stop_run` follow it up by name. A server, watcher or app never finishes: to \
+start one, pass `pattern` for the line it prints once ready (e.g. `Listening on|Started .* in|ready in`) rather than \
+a long `timeout`, so the call returns as soon as it is up. Returns the tab's status (`state`: starting, running, stopping, succeeded, failed, \
 crashed, stoppedByAgent, stoppedByUser or startFailed; `exitCode`; `crash` with the signal or exception of a crashed \
 process) and its output so far.{OUTPUT}{SEQUENCE}{INTERVENTIONS}"
         ),
@@ -152,6 +154,7 @@ process) and its output so far.{OUTPUT}{SEQUENCE}{INTERVENTIONS}"
             };
             let env = call.args.get("envs").filter(|v| !v.is_null()).map(|_| call.str_map("envs")).transpose()?;
             let deadline = deadline(&call, RUN_TIMEOUT_MS)?;
+            let ready = pattern(&call)?;
             let host = call.host();
             let runs = &host.mcp_agent_runs;
             if let Some(run) = runs.get(call.root(), &name).filter(|r| r.running()) {
@@ -185,7 +188,7 @@ process) and its output so far.{OUTPUT}{SEQUENCE}{INTERVENTIONS}"
                 return Err(IdeError::invalid(format!("`{name}` did not start: {error}")));
             }
             let from = run.process_offset();
-            let end = run.wait(deadline, None, from, &call.cancel).await?;
+            let end = run.wait(deadline, ready.as_ref(), from, &call.cancel).await?;
             let mut extra = output_view(&call, &run, from)?;
             extra.insert("waitEnded".into(), end.as_str().into());
             result(&run, extra)
@@ -209,6 +212,12 @@ process) and its output so far.{OUTPUT}{SEQUENCE}{INTERVENTIONS}"
         ParamType::Integer,
         "Milliseconds to wait for the command to finish before returning (0 returns once it started); the command \
 keeps running after it",
+    ))
+    .param(Param::optional(
+        "pattern",
+        ParamType::String,
+        "Regular expression that ends the wait when the command's output matches it: the ready line of a server or \
+watcher. `waitEnded` is then `matched`",
     ))
     .param(Param::optional("maxLinesCount", ParamType::Integer, MAX_LINES))
     .param(Param::optional("truncateMode", ParamType::String, TRUNCATE_MODE))
@@ -296,6 +305,7 @@ pub fn list_runs() -> Tool {
 start of the command, exit code and times. `get_run_status` gives a tab's whole status.",
         |call| async move {
             let page = Page::of(&call, LIST_LIMIT)?;
+            let dir = crate::mcp::scope::Scope::of(&call)?;
             let wanted = call.opt_str("state")?.filter(|s| s != "all");
             let states = match wanted.as_deref() {
                 None => None,
@@ -316,6 +326,8 @@ start of the command, exit code and times. `get_run_status` gives a tab's whole 
                 .iter()
                 .rev()
                 .map(|r| r.status())
+                // A tab belongs where its command runs.
+                .filter(|s| dir.contains_shown(call.root(), s["workingDirectory"].as_str().unwrap_or_default()))
                 .filter(|s| {
                     states.as_ref().is_none_or(|states| s["state"].as_str().is_some_and(|v| states.contains(&v)))
                 })
@@ -332,6 +344,7 @@ start of the command, exit code and times. `get_run_status` gives a tab's whole 
         ParamType::String,
         "all (default), running, idle (not running), error (failed, crashed, startFailed), or one state",
     ))
+    .param(crate::mcp::scope::param())
     .param(Param::optional("limit", ParamType::Integer, "Tabs to return at most (default 10)"))
     .param(Param::optional("offset", ParamType::Integer, OFFSET))
 }
