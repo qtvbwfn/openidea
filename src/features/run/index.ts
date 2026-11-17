@@ -30,7 +30,7 @@ import {
   compiledDebugPlan,
   contextMenuItems,
   executeContext,
-  launchProduced,
+  debugBinary,
   modifyContext,
   prepareMenu,
   runContextAction,
@@ -92,6 +92,7 @@ import {
   selectConfig,
   selectedConfig,
   startRun,
+  debugSingleInstance,
   startSampleOutput,
   stopSession,
   subscribeOutput,
@@ -105,6 +106,7 @@ import { TEST_TREE_FOCUS, testTree } from "./testTree";
 import { startAgentRun, trimAgentArchive, type AgentRunRequest } from "./agentRuns";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
+import { UNITY_CONFIG_KIND, showUnityAttach } from "./unity";
 
 function trackFailedTestSelection(): () => void {
   let signature = "";
@@ -171,7 +173,12 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
     return;
   }
   if (remoteDebugBlocked(config)) return;
+  await debugSingleInstance(config, () => debugLaunch(config, chain, show));
+}
+
+async function debugLaunch(config: RunConfig, chain: readonly string[], show?: boolean): Promise<void> {
   if (!(await prepareLaunch(config, chain, show))) return;
+  if (config.kind === UNITY_CONFIG_KIND) return showUnityAttach(config);
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
   if (containerDebuggable(config) && getAction("debug.attach")) {
     await debugInContainer(config);
@@ -190,7 +197,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
   // A single compiled file (rustc / clang / zig): build with debug info, then debug the binary.
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
-    await launchProduced(compiled, true, { show });
+    await debugBinary(compiled.debug, config, show);
     return;
   }
   // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.
@@ -484,6 +491,14 @@ export function activate(): () => void {
         icon: "debug",
         when: "projectOpen",
         run: () => debugSelected(),
+      },
+      {
+        id: "run.attachUnity",
+        title: "Attach to Unity Process",
+        category: "Run",
+        icon: "debug",
+        when: "projectOpen",
+        run: () => showUnityAttach(),
       },
       {
         id: "run.runContext",

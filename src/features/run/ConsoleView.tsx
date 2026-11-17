@@ -584,6 +584,8 @@ export function ConsoleView({
         style={{
           fontFamily: consoleFont.family,
           fontSize: `${consoleFont.size}px`,
+          fontWeight: consoleFont.weight,
+          ["--fw-code-bold" as string]: String(consoleFont.boldWeight),
           lineHeight: `${rowHeight}px`,
         }}
         role="log"

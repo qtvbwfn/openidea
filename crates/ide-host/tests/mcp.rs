@@ -214,6 +214,79 @@ async fn project_path_argument_routes_to_another_open_project() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn trusted_attached_projects_are_writable_and_reach_the_window_they_are_attached_in() {
+    let h = Harness::new();
+    h.trust().await;
+    let base = dunce::canonicalize(h.tmp.path()).unwrap();
+    let (attached, untrusted, other) = (base.join("attached"), base.join("untrusted"), base.join("other"));
+    for dir in [&attached, &untrusted, &other] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    ide_workspace::workspace::Workspace::attach(
+        &h.root,
+        "project",
+        vec![h.root.clone(), attached.clone(), untrusted.clone()],
+    )
+    .unwrap();
+    h.host.trust.decide(&attached, true, false).unwrap();
+
+    // Outside the project folder, by absolute path.
+    let file = attached.join("new.txt");
+    h.call("create_new_file", json!({"pathInProject": file, "text": "hello"})).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
+    let shown = file.to_string_lossy().replace('\\', "/");
+    let patch = format!("*** Begin Patch\n*** Update File: {shown}\n@@\n-hello\n+patched\n*** End Patch");
+    let output = h.call("apply_patch", json!({ "input": patch })).await;
+    assert!(output.starts_with("1 out of 1"), "{output}");
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with("patched"));
+    for dir in [&untrusted, &other] {
+        let e = h.error("create_new_file", json!({"pathInProject": dir.join("x.txt"), "text": "no"})).await;
+        assert!(e.contains("outside"), "{}: {e}", dir.display());
+        assert!(!dir.join("x.txt").exists());
+    }
+
+    // A `projectPath` naming the attached project reaches the window it is attached in.
+    let registry = Registry::new(h.host.clone());
+    assert!(registry.projects().contains(&attached));
+    let read = tokio::task::spawn_blocking(move || {
+        registry.call(&attached, "read_file", &json!({"file_path": "src/b.txt"}).to_string(), CancellationToken::new())
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(read.starts_with("L1: needle"), "{read}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_of_a_project_attached_outside_go_by_their_absolute_path_everywhere() {
+    let h = Harness::new();
+    h.trust().await;
+    let attached = dunce::canonicalize(h.tmp.path()).unwrap().join("attached");
+    std::fs::create_dir_all(attached.join("src")).unwrap();
+    std::fs::write(attached.join("src/lib.rs"), "pub fn attached_marker() {}\n").unwrap();
+    let git = std::process::Command::new("git").current_dir(&attached).args(["init", "-q"]).status().unwrap();
+    assert!(git.success());
+    h.host.trust.decide(&attached, true, false).unwrap();
+    ide_host::ops::project::attach_workspace(&h.host, "main", &attached).unwrap();
+    assert!(h.host.project("main").unwrap().index.wait_idle(std::time::Duration::from_secs(10)));
+    let shown = |rel: &str| attached.join(rel).to_string_lossy().replace('\\', "/");
+
+    let files = h.json("search_file", json!({"q":"**/lib.rs"})).await;
+    assert_eq!(files["items"], json!([{ "filePath": shown("src/lib.rs") }]));
+    let symbols = h.json("search_symbol", json!({"q":"attached_marker"})).await;
+    assert_eq!(symbols["items"][0]["filePath"], shown("src/lib.rs"), "{symbols}");
+    assert_eq!(symbols["items"][0]["lineText"], "pub fn attached_marker() {}");
+    let status = h.json("git_status", json!({})).await;
+    let repos: Vec<&str> = status["repositories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["repositoryPathRelativeToProject"].as_str().unwrap())
+        .collect();
+    assert!(repos.contains(&shown("").trim_end_matches('/')), "{repos:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mutations_preserve_unsaved_text_and_reject_metadata_and_escapes() {
     let h = Harness::new();
     h.trust().await;
@@ -366,6 +439,116 @@ async fn git_status_and_diff_on_a_temporary_repository() {
     assert!(h.call("git_diff", json!({})).await.contains("src/a.txt"));
     assert!(h.call("git_diff", json!({"staged":true})).await.is_empty());
     assert!(!h.tmp.path().join("executed").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scope_limits_the_query_tools_to_a_directory() {
+    let h = Harness::new();
+    std::fs::create_dir_all(h.root.join("lib")).unwrap();
+    std::fs::write(h.root.join("lib/c.txt"), "needle\n").unwrap();
+    let paths = |v: &Value| -> Vec<String> {
+        let mut out: Vec<String> =
+            v["items"].as_array().unwrap().iter().map(|i| i["filePath"].as_str().unwrap().to_owned()).collect();
+        out.dedup();
+        out
+    };
+    assert_eq!(paths(&h.json("search_text", json!({"q":"needle","scope":"lib"})).await), ["lib/c.txt"]);
+    assert_eq!(paths(&h.json("search_regex", json!({"q":"need.e","scope":"lib/"})).await), ["lib/c.txt"]);
+    let absolute = h.root.join("src").to_string_lossy().into_owned();
+    assert_eq!(paths(&h.json("search_file", json!({"q":"*.txt","scope":absolute})).await), ["src/a.txt", "src/b.txt"]);
+    // Within the scope, `paths` narrows further.
+    assert_eq!(
+        paths(&h.json("search_text", json!({"q":"needle","scope":"src","paths":["**/b.txt"]})).await),
+        ["src/b.txt"]
+    );
+    assert!(h.error("search_text", json!({"q":"needle","scope":"missing"})).await.contains("is not a directory"));
+    assert!(h.error("search_text", json!({"q":"needle","scope":".."})).await.contains("outside the project"));
+
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git").current_dir(&h.root).args(args).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    };
+    git(&["init"]);
+    git(&["add", "."]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Initial"]);
+    std::fs::write(h.root.join("src/a.txt"), "changed\n").unwrap();
+    std::fs::write(h.root.join("lib/c.txt"), "changed\n").unwrap();
+    let status = h.json("git_status", json!({"scope":"lib"})).await;
+    assert_eq!(status["repositories"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        status["repositories"][0]["entries"],
+        json!([{"pathRelativeToRepository":"lib/c.txt","indexStatus":" ","workTreeStatus":"M"}])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scoped_symbol_search_finds_matches_past_the_unscoped_ones() {
+    let h = Harness::new();
+    std::fs::create_dir_all(h.root.join("many")).unwrap();
+    for i in 0..60 {
+        std::fs::write(h.root.join(format!("many/m{i:02}.rs")), "pub fn pool_marker() {}\n").unwrap();
+    }
+    std::fs::create_dir_all(h.root.join("zz")).unwrap();
+    std::fs::write(h.root.join("zz/last.rs"), "pub fn pool_marker() {}\n").unwrap();
+    // Files written after the project opened reach the index through the watcher.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while h.json("search_symbol", json!({"q":"pool_marker","limit":100})).await["items"].as_array().map_or(0, Vec::len)
+        < 61
+    {
+        assert!(std::time::Instant::now() < deadline, "the files were never indexed");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let found = h.json("search_symbol", json!({"q":"pool_marker","scope":"zz","limit":1})).await;
+    assert_eq!(found["items"][0]["filePath"], "zz/last.rs", "{found}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scope_reaches_an_attached_worktree_the_repository_ignores() {
+    let h = Harness::new();
+    h.trust().await;
+    let git = |dir: &Path, args: &[&str]| {
+        let output = std::process::Command::new("git").current_dir(dir).args(args).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    };
+    git(&h.root, &["init"]);
+    git(&h.root, &["add", "."]);
+    git(&h.root, &["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Initial"]);
+    std::fs::write(h.root.join(".git/info/exclude"), "/.wt/\n").unwrap();
+    git(&h.root, &["worktree", "add", "-q", ".wt/feature"]);
+    let worktree = h.root.join(".wt/feature");
+    h.host.trust.decide(&worktree, true, false).unwrap();
+    ide_host::ops::project::attach_workspace(&h.host, "main", &worktree).unwrap();
+    // Hidden folders excluded by name: `.wt` is one, the worktree's own files are not.
+    ide_host::ops::project::set_settings(
+        &h.host,
+        "main",
+        ide_workspace::settings::SettingsScope::Project,
+        "projectStructure.excludeFiles",
+        "\".*\"",
+    )
+    .unwrap();
+    let found = |args: Value| {
+        let h = &h;
+        async move {
+            let v = h.json("search_text", args).await;
+            let mut out: Vec<String> = v["items"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|i| i["filePath"].as_str().unwrap().to_owned())
+                .collect();
+            out.dedup();
+            out
+        }
+    };
+    let everywhere = found(json!({"q":"needle"})).await;
+    assert!(everywhere.contains(&".wt/feature/src/b.txt".to_owned()), "{everywhere:?}");
+    assert_eq!(
+        found(json!({"q":"needle","scope":".wt/feature/src"})).await,
+        [".wt/feature/src/a.txt", ".wt/feature/src/b.txt"]
+    );
+    assert_eq!(found(json!({"q":"needle","paths":[".wt/feature/src/b.txt"]})).await, [".wt/feature/src/b.txt"]);
 }
 
 #[cfg(unix)]
@@ -596,6 +779,31 @@ fn agent_process(h: &Harness, name: &str) -> ide_core::RunId {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
+async fn run_command_returns_once_a_server_prints_its_ready_line() {
+    let h = Harness::new();
+    h.trust().await;
+    h.host.mcp_requests.set_ready("main", true);
+    h.host
+        .global_settings
+        .set(ide_workspace::SettingsScope::Global, "mcpServer.runWithoutConfirmation", json!(true))
+        .unwrap();
+    let _started = run_tool_window(&h);
+    // A server started with its ready line returns once it prints it, long before the timeout.
+    let started_at = std::time::Instant::now();
+    let up = h
+        .json(
+            "run_command",
+            json!({"name": "web", "command": "sleep 1; echo Listening on 8080; sleep 30", "pattern": "Listening on", "timeout": 60000}),
+        )
+        .await;
+    assert_eq!((up["waitEnded"].as_str(), up["state"].as_str()), (Some("matched"), Some("running")), "{up}");
+    assert!(up["output"].as_str().unwrap().contains("Listening on 8080"), "{up}");
+    assert!(started_at.elapsed() < std::time::Duration::from_secs(20), "returned after {:?}", started_at.elapsed());
+    h.json("stop_run", json!({"name": "web", "force": true, "timeout": 10000})).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
 async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
     let h = Harness::new();
     h.trust().await;
@@ -696,4 +904,77 @@ async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
     h.json("send_run_input", json!({"name": "interrupt", "keys": ["Ctrl+C"]})).await;
     let interrupted = h.json("wait_for_run", json!({"name": "interrupt", "timeout": 10000})).await;
     assert_eq!(interrupted["state"], "stoppedByAgent", "{interrupted}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_list_and_run_require_confirmation() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let h = Harness::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = socket.read(&mut buf).await;
+        let body = b"{\"ok\":true}";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let _ = socket.write_all(response.as_bytes()).await;
+    });
+
+    std::fs::write(
+        h.root.join("api.http"),
+        format!(
+            "### Health\nGET http://{addr}/health\nAccept: application/json\n\n### Echo\n# @name echo\nGET http://{addr}/echo\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(h.root.join("http-client.env.json"), r#"{"dev":{"unused":"x"}}"#).unwrap();
+
+    let listed = h.json("http_list_requests", json!({"path": "api.http"})).await;
+    assert_eq!(listed["requests"].as_array().unwrap().len(), 2, "{listed}");
+    assert_eq!(listed["requests"][0]["index"], 0);
+    assert_eq!(listed["requests"][0]["name"], "Health");
+    assert_eq!(listed["requests"][0]["method"], "GET");
+    assert_eq!(listed["requests"][1]["name"], "echo");
+    assert!(listed["requests"][0]["url"].as_str().unwrap().contains("/health"));
+
+    // Write tool is hidden until the project is trusted.
+    assert!(Registry::new(h.host.clone()).tools(&h.root).unwrap().iter().all(|t| t.name != "http_run_request"));
+    h.trust().await;
+    assert!(
+        Registry::new(h.host.clone())
+            .tools(&h.root)
+            .unwrap()
+            .iter()
+            .any(|t| t.name == "http_run_request" && !t.read_only)
+    );
+
+    h.host.mcp_requests.set_ready("main", true);
+    let denied = h.error("http_run_request", json!({"path": "api.http", "index": 0, "env": "dev"}));
+    let deny = async {
+        let id = h.request().await;
+        h.host.mcp_requests.answer("main", id, false, None).unwrap();
+    };
+    let (error, ()) = tokio::join!(denied, deny);
+    assert!(error.contains("denied by the user"), "{error}");
+
+    h.events.lock().unwrap().clear();
+    let run = h.json("http_run_request", json!({"path": "api.http", "index": 0, "env": "dev"}));
+    let allow = async {
+        let id = h.request().await;
+        h.host.mcp_requests.answer("main", id, true, None).unwrap();
+    };
+    let (result, ()) = tokio::join!(run, allow);
+    assert_eq!(result["status"], 200, "{result}");
+    assert_eq!(result["method"], "GET");
+    assert!(result["body"].as_str().unwrap().contains("ok"), "{result}");
+    assert_eq!(result["bodyTruncated"], false);
+    // Secrets must not appear as request headers/body in the tool payload.
+    assert!(result.get("headers").is_none(), "{result}");
+    assert!(result.get("request").is_none(), "{result}");
 }

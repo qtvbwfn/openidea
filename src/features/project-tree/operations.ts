@@ -127,14 +127,22 @@ function expandFolder(path: string) {
 // ---------------------------------------------------------------------------
 // Open
 
-export async function openFile(path: string, opts: { preview?: boolean; focus?: boolean; external?: boolean } = {}) {
+export async function openFile(
+  path: string,
+  opts: { preview?: boolean; focus?: boolean; external?: boolean; side?: boolean } = {},
+) {
   const editor = maybeEditorService();
   if (!editor) {
     notifications().notify({ level: "warning", title: "No editor available", body: path, key: "project.noEditor" });
     return;
   }
   try {
-    await editor.openFile(path, { preview: opts.preview, focus: opts.focus ?? true, external: opts.external });
+    await editor.openFile(path, {
+      preview: opts.preview,
+      focus: opts.focus ?? true,
+      external: opts.external,
+      ...(opts.side && { side: true }),
+    });
   } catch (e) {
     fail(`Cannot open ${nameOf(path)}`, e);
   }
@@ -142,6 +150,16 @@ export async function openFile(path: string, opts: { preview?: boolean; focus?: 
 
 export function openSelection() {
   for (const n of selectedNodes()) if (!n.dir) void openFile(n.path);
+}
+
+/** Files among the selected nodes, for actions that open them. */
+export function selectedFiles(): ProjectNode[] {
+  return selectedNodes().filter((n) => !n.dir && !n.placeholder && !n.member);
+}
+
+/** Open in Right Split (⇧Enter): the selected files in the pane right of the current editor. */
+export async function openSelectionInRightSplit(nodes = selectedFiles()) {
+  for (const [i, n] of nodes.entries()) await openFile(n.path, { side: true, focus: i === nodes.length - 1 });
 }
 
 // ---------------------------------------------------------------------------
@@ -896,6 +914,20 @@ export function delegate(id: string, arg: unknown): boolean {
   if (!getAction(id)) return false;
   void executeAction(id, arg);
   return true;
+}
+
+/**
+ * Reformat Code (⌥⌘L) for project view nodes: a single file is reformatted at once,
+ * a directory or several nodes open the Reformat Code dialog. False when nothing applies.
+ */
+export function reformatNodes(nodes: readonly ProjectNode[]): boolean {
+  const targets = nodes.filter((n) => !n.group && !n.readOnly);
+  if (!targets.length) return false;
+  if (targets.length === 1 && !targets[0]!.dir) return delegate("code.reformatFile", { path: targets[0]!.path });
+  return delegate("code.reformatFiles", {
+    files: targets.filter((n) => !n.dir).map((n) => n.path),
+    directories: targets.filter((n) => n.dir).map((n) => n.path),
+  });
 }
 
 /** Argument for VCS actions: one path or several. */

@@ -15,6 +15,8 @@ export const AGENTS_GROUP = "Agents";
 export const MCP_PAGE = "agents.mcpServers";
 /** Settings › Agents › Command Permissions. */
 export const POLICY_PAGE = "agents.policy";
+/** Settings › Agents › Working Status: the playful words under a working conversation. */
+export const WORKING_STATUS_PAGE = "agents.workingStatus";
 
 export const sessionKey = (task: string) => `agent:${task}`;
 
@@ -63,6 +65,7 @@ const PROVIDER_ICONS = new Set([
   "kiro",
   "vibe",
   "omp",
+  "deepseek-harness",
 ]);
 
 /** The agent's logo; custom agents get the generic agents icon. */
@@ -239,17 +242,4 @@ export function age(ms: number, now = Date.now()): string {
   const h = Math.round(m / 60);
   if (h < 24) return `${h}h`;
   return `${Math.round(h / 24)}d`;
-}
-
-/** The status change worth a notification, if any. */
-export function attentionChange(
-  prev: AgentStatus | undefined,
-  next: AgentStatus,
-): "finished" | "failed" | "input" | null {
-  if (prev === next || prev === undefined) return null;
-  if (next === "needsInput") return "input";
-  if (!isBusy(prev)) return null;
-  if (next === "ready") return "finished";
-  if (next === "failed" || next === "limited") return "failed";
-  return null;
 }

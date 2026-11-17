@@ -122,6 +122,9 @@ pub(crate) struct StoredSymbol {
     pub kind: SymbolKind,
     pub container: Option<String>,
     pub range: Range,
+    /// Base names of a class definition; empty for every other symbol.
+    #[serde(default)]
+    pub bases: Vec<String>,
 }
 
 /// A symbol resolved out of [`SymTable`].
@@ -130,6 +133,8 @@ pub(crate) struct SymRef<'a> {
     pub kind: SymbolKind,
     pub container: Option<&'a str>,
     pub range: Range,
+    /// Base names joined with `'\0'`; empty when the symbol has none.
+    pub bases: &'a str,
 }
 
 pub(crate) struct FileEntry {
@@ -436,6 +441,8 @@ pub(crate) struct SymTable {
     container: Vec<Span>,
     kind: Vec<SymbolKind>,
     range: Vec<Range>,
+    /// Base names joined with `'\0'`, one interned span per symbol (`NONE` for none).
+    bases: Vec<Span>,
     text: String,
     dead_rows: usize,
 }
@@ -455,6 +462,18 @@ impl SymTable {
     pub(crate) fn container(&self, i: u32) -> Option<&str> {
         let span = self.container[i as usize];
         (span.start != u32::MAX).then(|| span.get(&self.text))
+    }
+
+    /// The symbol's base names joined with `'\0'`; empty when it has none.
+    #[inline]
+    pub(crate) fn bases(&self, i: u32) -> &str {
+        let span = self.bases[i as usize];
+        if span.start == u32::MAX { "" } else { span.get(&self.text) }
+    }
+
+    /// The base names of row `i`, split out of the interned string.
+    pub(crate) fn base_list(&self, i: u32) -> Vec<&str> {
+        self.bases(i).split('\0').filter(|b| !b.is_empty()).collect()
     }
 
     /// The mask + name rows of a file's contiguous symbol range.
@@ -493,10 +512,12 @@ impl SymTable {
                 Some(c) => self.intern(c),
                 None => Span::NONE,
             };
+            let bases = if s.bases.is_empty() { Span::NONE } else { self.intern(&s.bases.join("\0")) };
             self.head.push(SymHead { mask, name });
             self.container.push(container);
             self.kind.push(s.kind);
             self.range.push(s.range);
+            self.bases.push(bases);
         }
         (start, agg_mask)
     }
@@ -510,6 +531,7 @@ impl SymTable {
                     && self.container(i) == s.container.as_deref()
                     && self.kind(i) == s.kind
                     && self.range(i) == s.range
+                    && self.base_list(i) == s.bases.iter().map(String::as_str).collect::<Vec<_>>()
             })
     }
 
@@ -526,6 +548,7 @@ impl SymTable {
         let mut container = Vec::with_capacity(head.capacity());
         let mut kind = Vec::with_capacity(head.capacity());
         let mut range = Vec::with_capacity(head.capacity());
+        let mut bases = Vec::with_capacity(head.capacity());
         let mut live = 0u32;
         for (slot, row) in rows.iter_mut().enumerate() {
             if !row.live {
@@ -552,6 +575,14 @@ impl SymTable {
                 }
                 kind.push(self.kind[i as usize]);
                 range.push(self.range[i as usize]);
+                let bases_span = self.bases[i as usize];
+                if bases_span.start == u32::MAX {
+                    bases.push(Span::NONE);
+                } else {
+                    let b = bases_span.get(&self.text);
+                    bases.push(Span::of(&text, b));
+                    text.push_str(b);
+                }
                 live += 1;
             }
         }
@@ -559,6 +590,7 @@ impl SymTable {
         self.container = container;
         self.kind = kind;
         self.range = range;
+        self.bases = bases;
         self.text = text;
         self.dead_rows = 0;
     }
@@ -568,6 +600,7 @@ impl SymTable {
         self.container.shrink_to_fit();
         self.kind.shrink_to_fit();
         self.range.shrink_to_fit();
+        self.bases.shrink_to_fit();
         self.text.shrink_to_fit();
     }
 }
@@ -657,6 +690,7 @@ impl IndexData {
         self.syms.container.reserve(symbols);
         self.syms.kind.reserve(symbols);
         self.syms.range.reserve(symbols);
+        self.syms.bases.reserve(symbols);
     }
 
     /// Hydrates a validated warm-start snapshot in one pass, without per-file
@@ -736,14 +770,23 @@ impl IndexData {
                     kind: s.kind,
                     container: s.container.map(str::to_owned),
                     range: s.range,
+                    bases: s.bases.split('\0').filter(|b| !b.is_empty()).map(str::to_owned).collect(),
                 })
                 .collect(),
             ignored: e.ignored,
         }
     }
 
-    pub(crate) fn record_of(&self, path: &Path) -> Option<FileRecord> {
-        self.get(path).map(|e| self.record(e))
+    /// Refreshes on-disk metadata of an unchanged-content file in place and
+    /// returns its persisted record.
+    pub(crate) fn refresh_metadata(&mut self, path: &Path, mtime: u64, size: u64, ignored: bool) -> Option<FileRecord> {
+        let slot = *self.by_path.get(path)?;
+        let e = self.files[slot as usize].as_mut()?;
+        e.mtime = mtime;
+        e.size = size;
+        e.ignored = ignored;
+        let e = self.files[slot as usize].as_ref()?;
+        Some(self.record(e))
     }
 
     /// The symbols of one file, in declaration order.
@@ -754,6 +797,7 @@ impl IndexData {
             kind: syms.kind(i),
             container: syms.container(i),
             range: syms.range(i),
+            bases: syms.bases(i),
         })
     }
 
@@ -918,6 +962,7 @@ mod tests {
                     kind: SymbolKind::Function,
                     container: None,
                     range: Range::default(),
+                    bases: Vec::new(),
                 })
                 .collect(),
             ..Default::default()
@@ -1052,7 +1097,13 @@ mod tests {
     }
 
     fn symbol(n: &str) -> StoredSymbol {
-        StoredSymbol { name: n.to_owned(), kind: SymbolKind::Function, container: None, range: Range::default() }
+        StoredSymbol {
+            name: n.to_owned(),
+            kind: SymbolKind::Function,
+            container: None,
+            range: Range::default(),
+            bases: Vec::new(),
+        }
     }
 
     #[test]

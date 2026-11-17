@@ -38,7 +38,7 @@ import { goModulePath, loadGoModules } from "./goModules";
 import { isPythonPackage, loadPythonPackages } from "./pythonPackages";
 import { remoteDebugBlocked } from "./remote";
 import { toolEnv } from "./runtimes";
-import { adoptTemporary, loadConfigs, modifyTemporary, startRun, useRun } from "./store";
+import { adoptTemporary, debugSingleInstance, loadConfigs, modifyTemporary, startRun, useRun } from "./store";
 import { zigTargets } from "./targets";
 import { tx } from "@/platform/i18n";
 
@@ -165,28 +165,37 @@ export async function launchProduced(
     return;
   }
   if (remoteDebugBlocked(config)) return;
-  if (p.debug) {
-    if (!getAction("debug.startConfig")) {
-      notifications().notify({
-        group: "run",
-        level: "warning",
-        title: "Debugger is not available",
-        key: "run-no-debugger",
-      });
-      return;
-    }
-    if (!(await buildFirst(p.debug.build, options?.show))) return;
-    // `services` marks the session as launched from the Services window (origin propagation);
-    // `show: false` keeps a batch launch from stealing the console.
-    await executeAction("debug.startConfig", {
-      config: p.debug.config,
-      origin: config,
-      services: options?.services,
-      show: options?.show,
-    });
+  const plan = p.debug;
+  if (plan) {
+    await debugSingleInstance(config, () => debugBinary(plan, config, options?.show, options?.services));
     return;
   }
   await executeAction("run.debugConfig", options?.show === false ? { config, show: false } : config);
+}
+
+/**
+ * A compiled single file's debug plan: builds the binary with debug info, then debugs it as
+ * `origin` (the session's configuration). The caller stops `origin`'s other instances first.
+ */
+export async function debugBinary(
+  plan: NonNullable<Produced["debug"]>,
+  origin: RunConfig,
+  show?: boolean,
+  services?: boolean,
+): Promise<void> {
+  if (!getAction("debug.startConfig")) {
+    notifications().notify({
+      group: "run",
+      level: "warning",
+      title: "Debugger is not available",
+      key: "run-no-debugger",
+    });
+    return;
+  }
+  if (!(await buildFirst(plan.build, show))) return;
+  // `services` marks the session as launched from the Services window (origin propagation);
+  // `show: false` keeps a batch launch from stealing the console.
+  await executeAction("debug.startConfig", { config: plan.config, origin, show, services });
 }
 
 /**

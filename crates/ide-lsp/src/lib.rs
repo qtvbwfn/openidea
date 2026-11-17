@@ -26,6 +26,8 @@ mod launch;
 mod library_source;
 mod loading;
 mod notebook;
+mod phoxite;
+mod plugin_requests;
 mod pull;
 mod scope;
 mod server;
@@ -38,13 +40,16 @@ mod uri;
 mod virtual_doc;
 mod vue_navigation;
 mod vue_refs;
+mod xml_catalog;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{CheckedServer, DocumentCheck, FileInspection, InspectHost, InspectOptions};
 pub use jdtls::jvm_inspect::JdtJvmInspector;
+pub use jdtls::stream_trace::JdtStreamTracer;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
 pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
+pub use plugin_requests::plugin_method_allowed;
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
 pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
 
@@ -237,6 +242,7 @@ pub struct LspManager {
     shown_messages: Mutex<HashSet<(String, String)>>,
     /// go.mod files whose upgrades gopls has been asked to check this session.
     go_mod_checked: Mutex<HashSet<PathBuf>>,
+    go_mod_queries: Mutex<go_mod::Queries>,
     /// Virtual (non-`file:`) URIs a server returned, by the server that owns them.
     virtual_origins: Mutex<HashMap<String, ide_core::ServerId>>,
     /// Contents fetched for virtual URIs.
@@ -430,12 +436,24 @@ async fn library_sources(snap: &DocSnap, root: &Path, pos: Pos, locs: Vec<Locati
 
 const JAVA_IMPLEMENTATIONS: &str = "openidea.java.implementations";
 
+/// jdtls' locations of the implementations of the method at a position in the classes named
+/// with it, for implementation classes in dependencies: its standard request puts those at the
+/// start of the decompiled class instead of at the method.
+const JAVA_IMPLEMENTATION_LOCATIONS: &str = "openidea.java.implementationLocations";
+
 /// The answer of [`JAVA_IMPLEMENTATIONS`]: `complete` when the type is declared in the
 /// sources, so no dependency can implement it.
 #[derive(serde::Deserialize)]
 struct SourceImplementations {
     locations: Vec<lsp::Location>,
     complete: bool,
+}
+
+/// The answer of [`JAVA_IMPLEMENTATION_LOCATIONS`]: one entry per requested class, `None` when
+/// it has no implementation of the method.
+#[derive(serde::Deserialize)]
+struct TargetImplementations {
+    locations: Vec<Option<lsp::Location>>,
 }
 
 /// Receives the implementations found so far, before a slower search for the rest.
@@ -513,6 +531,7 @@ impl LspManager {
             configuration_cache: Arc::new(Mutex::new(Default::default())),
             shown_messages: Mutex::new(HashSet::new()),
             go_mod_checked: Mutex::new(HashSet::new()),
+            go_mod_queries: Mutex::new(go_mod::Queries::default()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
             virtual_stamps: Mutex::new(HashMap::new()),
@@ -660,15 +679,17 @@ impl LspManager {
     /// The servers serving `path`: every regular one, and each `fallback` one
     /// only while all servers listed before it have given up (missing, not
     /// launchable, or crashed for good). One that requires a root marker serves
-    /// only files below one, and stands in for no other.
+    /// only files below one, and stands in for no other. One that a server before
+    /// it `replaces` is left out while that server serves the file.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
         if let Some(servers) = self.arduino_servers(language, path) {
             return servers;
         }
         let mut out = Vec::new();
         let mut available_before = false;
+        let mut replaced: Vec<String> = Vec::new();
         for sc in &self.language_servers(language) {
-            if sc.fallback && available_before {
+            if (sc.fallback && available_before) || replaced.contains(&sc.name) {
                 continue;
             }
             if sc.require_root_marker
@@ -678,6 +699,9 @@ impl LspManager {
             }
             let server = self.server_for(sc, language, path);
             available_before |= !sc.require_root_marker && !server.gave_up();
+            if !server.gave_up() {
+                replaced.extend(sc.replaces.iter().cloned());
+            }
             out.push(server);
         }
         out
@@ -865,7 +889,7 @@ impl LspManager {
                     ide_core::event::ServerStatus::Missing,
                     Some(message),
                 ) {
-                    self.attach_fallbacks();
+                    self.fallbacks_take_over().await;
                 }
                 return;
             }
@@ -878,7 +902,7 @@ impl LspManager {
                     ide_core::event::ServerStatus::Misconfigured,
                     Some(message),
                 ) {
-                    self.attach_fallbacks();
+                    self.fallbacks_take_over().await;
                 }
                 return;
             }
@@ -891,7 +915,7 @@ impl LspManager {
                     ide_core::event::ServerStatus::Crashed,
                     Some(message),
                 ) {
-                    self.attach_fallbacks();
+                    self.fallbacks_take_over().await;
                 }
                 return;
             }
@@ -1039,7 +1063,7 @@ impl LspManager {
                 }
             }
             // Gave up (crashed repeatedly, or its build expired): the fallbacks it hid take over.
-            None => self.attach_fallbacks(),
+            None => self.fallbacks_take_over().await,
         }
     }
 
@@ -1385,6 +1409,7 @@ impl LspManager {
     }
 
     fn close_document(&self, doc: DocId) {
+        self.go_mod_queries.lock().cancel(doc);
         let (d, compose_removed) = {
             let mut docs = self.docs.lock();
             let Some(d) = docs.remove(&doc) else { return };
@@ -1786,9 +1811,16 @@ impl LspManager {
                 out.push(loc);
                 continue;
             };
-            let Ok(uri) = self.java_class_file(Path::new(""), Some((entry.jar, entry.entry))).await else {
-                out.push(loc);
-                continue;
+            // The Kotlin server may name the jar by another path than jdtls (its own copy of a
+            // `system`-scope jar): its stub would be all the user gets, so take jdtls' only class
+            // of that name.
+            let uri = match self.archive_class(entry.jar, entry.entry, true).await {
+                Ok(uri) => uri,
+                Err(e) => {
+                    tracing::info!("library class stays a stub: {}", e.message);
+                    out.push(loc);
+                    continue;
+                }
             };
             let range = match (&name, self.virtual_document(&uri).await) {
                 (Some(name), Ok(doc)) => library_source::declaration_range(&doc.text, name),
@@ -1797,6 +1829,84 @@ impl LspManager {
             out.push(Location { path: uri.clone().into(), range, uri: Some(uri) });
         }
         out
+    }
+
+    /// jdtls: where the implementation methods of the method at `pos` are declared in the
+    /// dependency classes `locs` point at. Its standard request answers those with `0:0`, the
+    /// start of the class file's decompiled source; [`JAVA_IMPLEMENTATION_LOCATIONS`] resolves
+    /// the declaration itself.
+    async fn java_implementation_locations(
+        &self,
+        snap: &DocSnap,
+        t: &Target,
+        pos: Pos,
+        locs: Vec<Location>,
+        cancel: Option<&CancellationToken>,
+    ) -> Vec<Location> {
+        if t.server.name != "jdtls" || !t.caps().commands().iter().any(|c| c == JAVA_IMPLEMENTATION_LOCATIONS) {
+            return locs;
+        }
+        let targets: Vec<(usize, String)> = locs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| {
+                let uri = l.uri.as_deref()?;
+                (virtual_doc::scheme(uri) == "jdt" && l.range.start.line == 0).then(|| (i, uri.to_owned()))
+            })
+            .collect();
+        if targets.is_empty() {
+            return locs;
+        }
+        let params = snap.pos_params(t, pos);
+        let arguments = json!([
+            params["textDocument"]["uri"],
+            params["position"]["line"],
+            params["position"]["character"],
+            targets.iter().map(|(_, uri)| uri).collect::<Vec<_>>(),
+        ]);
+        let result: IdeResult<TargetImplementations> = self
+            .call(
+                t,
+                "workspace/executeCommand",
+                json!({ "command": JAVA_IMPLEMENTATION_LOCATIONS, "arguments": arguments }),
+                cancel,
+                LONG_TIMEOUT,
+            )
+            .await;
+        let found = match result {
+            Ok(found) if found.locations.len() == targets.len() => found,
+            Ok(_) => return locs,
+            Err(e) => {
+                tracing::debug!("{JAVA_IMPLEMENTATION_LOCATIONS}: {}", e.message);
+                return locs;
+            }
+        };
+        let mut out = locs;
+        for ((i, _), loc) in targets.into_iter().zip(found.locations) {
+            if let Some(loc) = loc.as_ref().and_then(|l| self.conv(t.enc()).location(l)) {
+                out[i] = loc;
+            }
+        }
+        out
+    }
+
+    /// Refines the implementation `locs` of the method at `pos`: jdtls puts an implementation in
+    /// a dependency at the start of its decompiled class instead of at the method, which matters
+    /// when the gutter marker's targets are opened one by one.
+    pub async fn implementation_locations(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        locs: Vec<Location>,
+        cancel: CancellationToken,
+    ) -> IdeResult<Vec<Location>> {
+        let (_, cap, feature) = goto_method(GotoKind::Implementation);
+        let (snap, targets) = self.doc_targets(doc, feature, |c| c.has(cap)).await?;
+        let mut out = locs;
+        for t in &targets {
+            out = self.java_implementation_locations(&snap, t, pos, out, Some(&cancel)).await;
+        }
+        Ok(out)
     }
 
     async fn goto_in(
@@ -1838,6 +1948,12 @@ impl LspManager {
                 Ok(Some(r)) => {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
                     let locs = library_sources(snap, &self.project_root, pos, locs).await;
+                    // Only explicit Go to Implementation: gutter markers ask for every line.
+                    let locs = if method == "textDocument/implementation" && partial.is_some() {
+                        self.java_implementation_locations(snap, t, pos, locs, cancel).await
+                    } else {
+                        locs
+                    };
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                     self.note_arduino_sources(&t.server, &locs);
                     let locs = self.jdt_library_classes(snap, pos, locs).await;
@@ -3464,7 +3580,10 @@ impl LspManager {
             virtual_doc::is_decompiled(&text)
         };
         let title = title.unwrap_or_else(|| virtual_doc::title(uri, decompiled));
-        let detected = self.languages.detect(Path::new(&title), None);
+        let mut detected = self.languages.detect(Path::new(&title), None);
+        if let Some(stem) = title.strip_suffix(".class").filter(|_| virtual_doc::is_java_class_stub(&text)) {
+            detected = self.languages.detect(Path::new(&format!("{stem}.java")), None);
+        }
         let language_id = if detected == LanguageId::plain_text() {
             languages.first().cloned().unwrap_or(detected)
         } else {
@@ -3684,6 +3803,9 @@ impl LspManager {
         if cfg.name == compose::SERVER {
             compose::configure_yaml_compose_schemas(&mut cfg, &self.open_compose_files());
         }
+        if cfg.name == xml_catalog::SERVER {
+            xml_catalog::configure_lemminx_catalogs(&mut cfg);
+        }
         cfg
     }
 
@@ -3702,6 +3824,7 @@ impl LspManager {
     pub fn set_execution_allowed(&self, allowed: bool) {
         let previous = self.execution_allowed.swap(allowed, Ordering::AcqRel);
         if !allowed {
+            self.go_mod_queries.lock().cancel_all();
             for server in self.servers.lock().iter() {
                 server.start_token().cancel();
             }
@@ -3828,8 +3951,16 @@ impl LspManager {
         }
     }
 
-    /// A server enabled again shadows the fallbacks attached in its place: they
-    /// leave the open documents, and stop once no document uses them.
+    /// A server gave up: its fallbacks take over the open documents, and the servers
+    /// they replace leave.
+    async fn fallbacks_take_over(&self) {
+        self.attach_fallbacks();
+        self.detach_shadowed_fallbacks().await;
+    }
+
+    /// A server enabled again shadows the fallbacks attached in its place, and a
+    /// fallback that took over may replace a server attached earlier: they leave the
+    /// open documents, and stop once no document uses them.
     async fn detach_shadowed_fallbacks(&self) {
         let open: Vec<(DocId, LanguageId, PathBuf)> =
             self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
@@ -3845,6 +3976,7 @@ impl LspManager {
                 .filter(|a| {
                     !wanted.iter().any(|w| w.id == a.server.id)
                         && (configs.iter().any(|c| c.fallback && c.name == a.server.name)
+                            || configs.iter().any(|c| c.replaces.contains(&a.server.name))
                             || (a.server.name == "clangd" && wanted.iter().any(|s| s.name == arduino::SERVER)))
                 })
                 .map(|a| a.server.id)
@@ -4037,6 +4169,7 @@ impl LspManager {
 
     pub async fn shutdown_all(&self) {
         self.shutting_down.store(true, Ordering::Release);
+        self.go_mod_queries.lock().cancel_all();
         let _reconfigure = self.reconfigure_lock.lock().await;
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         join_all(servers.iter().map(|s| self.stop_instance(s, true))).await;

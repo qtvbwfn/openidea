@@ -57,6 +57,9 @@ export const eclipseWindows: Record<string, string[]> = {
   "code.expandToLevel5": [],
   "refactor.extractMethod": ["Shift+Alt+M"],
   "navigate.fileStructure": ["Ctrl+F3", "Ctrl+O"],
+  // Ctrl+F5 steps into, Ctrl+Y redoes: no data editor defaults on them.
+  "db.reloadPage": [],
+  "db.deleteRows": ["Alt+Delete"],
   "db.goToColumn": ["Ctrl+F3", "Ctrl+O"],
   "find.inFile": [],
   "find.inPath": ["Ctrl+H"],
@@ -99,6 +102,7 @@ export const eclipseWindows: Record<string, string[]> = {
   "diff.nextDifference": ["Ctrl+F7"],
   "diff.prevFile": ["Ctrl+Alt+Shift+Right"],
   "diff.nextFile": ["Ctrl+Alt+Shift+Left"],
+  "diff.focusOppositePane": [],
   "diff.applyLeftSide": [],
   "diff.applyRightSide": [],
   "navigate.nextOccurrence": [],

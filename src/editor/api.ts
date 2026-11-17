@@ -30,11 +30,12 @@ import {
 } from "@codemirror/state";
 import { GutterMarker, ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
 import type { LanguageDescription } from "@codemirror/language";
+import type { HunkKind } from "@/bindings";
 import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
-import { maybeEditorService } from "@/workbench/contributions";
+import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { cornerInset } from "@/editor/core/cm/cornerInset";
-export { iconAreaSource, type IconAreaSource } from "@/editor/core/cm/iconArea";
+export { iconAreaSource, mapLineStart, type IconAreaSource } from "@/editor/core/cm/iconArea";
 
 /** Documents above this size (UTF-16 units) skip per-line decorations. */
 export const HEAVY_LIMIT = 8_000_000;
@@ -122,6 +123,8 @@ export function lazyEditorExtension(
 export interface TextEditorHandle {
   view: EditorView;
   ctx: EditorDocContext;
+  /** The editor tab it shows, for the editors of tabs (not diff sides, previews…). */
+  tabId?: string;
 }
 
 interface EditorRegistry {
@@ -290,6 +293,20 @@ export const documentSynced = Facet.define<() => Promise<void>, (() => Promise<v
   combine: (values) => values[0] ?? null,
 });
 
+/**
+ * Undo / Redo of an editor whose history is kept outside CodeMirror (notebook cells share
+ * the notebook's backend history). Commands that would call CodeMirror's history (Vim's
+ * `u` / `Ctrl-R`) go through it instead.
+ */
+export interface ExternalHistory {
+  undo(): void;
+  redo(): void;
+}
+
+export const externalHistory = Facet.define<ExternalHistory, ExternalHistory | null>({
+  combine: (values) => values[0] ?? null,
+});
+
 export function whenSynced(view: EditorView): Promise<void> {
   return view.state.facet(documentSynced)?.() ?? Promise.resolve();
 }
@@ -357,6 +374,21 @@ export const scrollbarMarks = Facet.define<readonly ScrollbarMark[], readonly Sc
  * Several providers are layered (later ones on top).
  */
 export const gutterLaneMarkers = Facet.define<RangeSet<GutterMarker>>();
+
+/**
+ * The VCS changes the change-marker lane shows, as document offsets of this state (mapped
+ * through edits), in file order. `to <= from` draws a deletion notch on the line at `from`.
+ * Editor panels read them (`openidea.editor.changes()`).
+ */
+export interface LineChange {
+  kind: HunkKind;
+  from: number;
+  to: number;
+}
+
+export const lineChanges = Facet.define<readonly LineChange[], readonly LineChange[]>({
+  combine: (values) => values[0] ?? [],
+});
 
 /** Marker for `gutterLaneMarkers`: a solid 3px bar (or a small wedge for `deleted`). */
 export class LaneMarker extends GutterMarker {
@@ -511,6 +543,8 @@ export interface NavigationLocation {
   col: number;
   /** `Date.now()` when the location was last visited. */
   time: number;
+  /** A place that is a tab rather than a text position (a diff), opened with this input on Back. */
+  input?: EditorInput;
 }
 
 export interface NavigationHistorySnapshot {

@@ -761,3 +761,202 @@ test("Find in Conversation skips user-select:none summaries and closed <details>
   }));
   expect(expandedHighlights).toEqual({ thoughtOpen: true, findCount: 2, currentCount: 1 });
 });
+
+test("keeps ordered, bulleted and task list markers unclipped inside measured rows when zoomed in", async ({
+  page,
+}) => {
+  const numbered = Array.from({ length: 10 }, (_, i) => `${i + 1}. **Item ${i + 1}**\n   - Nested bullet`).join("\n");
+  await openReply(page, `## Feature Gaps\n\n${numbered}\n\n- [x] Checked task\n- [ ] Open task`);
+  await page.evaluate(async (task) => {
+    const storePath = "/src/features/agents/store.ts";
+    const actionsPath = "/src/platform/actions.ts";
+    const store = await import(storePath);
+    const { executeAction } = await import(actionsPath);
+    store.openTaskInEditorLocation(task.id);
+    await new Promise((r) => setTimeout(r, 150));
+    const stream = document.querySelector<HTMLElement>("[class*='_stream_']");
+    stream?.focus();
+    for (let i = 0; i < 12; i++) await executeAction("editor.increaseFontSize");
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  const row = stream.locator("[class*='_conversationRow_'][data-measured]", { has: page.locator("ol") });
+  await expect(row).toBeVisible();
+
+  const bounds = await row.evaluate((rowEl) => {
+    const rowLeft = rowEl.getBoundingClientRect().left;
+    const items = [...rowEl.querySelectorAll<HTMLElement>("ol > li, ul > li")];
+    const markers = items
+      .filter((li) => getComputedStyle(li, "::before").content !== "none")
+      .map((li) => {
+        const rect = li.getBoundingClientRect();
+        const before = getComputedStyle(li, "::before");
+        const lineHeight = Number.parseFloat(getComputedStyle(li).lineHeight);
+        const markerRight = rect.right - Number.parseFloat(before.right);
+        const markerLeft = markerRight - Number.parseFloat(before.width);
+        return {
+          text: li.firstChild?.textContent?.trim() ?? "",
+          offsetFromRowLeft: Math.round((markerLeft - rowLeft) * 100) / 100,
+          singleLine: Number.parseFloat(before.height) <= lineHeight * 1.15,
+        };
+      });
+    const checkboxes = [...rowEl.querySelectorAll<HTMLInputElement>('li > input[type="checkbox"]')].map((input) => ({
+      offsetFromRowLeft: Math.round((input.getBoundingClientRect().left - rowLeft) * 100) / 100,
+    }));
+    return { fontSize: getComputedStyle(streamElement()!).fontSize, markers, checkboxes };
+    function streamElement() {
+      return rowEl.closest<HTMLElement>("[class*='_stream_']");
+    }
+  });
+
+  expect(bounds.fontSize).toBe("25px");
+  expect(bounds.markers.length).toBeGreaterThanOrEqual(10);
+  for (const m of bounds.markers) {
+    expect(m.singleLine, `single-line marker for ${m.text}`).toBe(true);
+    expect(m.offsetFromRowLeft, `marker for ${m.text}`).toBeGreaterThanOrEqual(0);
+  }
+  for (const cb of bounds.checkboxes) {
+    expect(cb.offsetFromRowLeft).toBeGreaterThanOrEqual(0);
+  }
+});
+
+test("indents process-run thoughts and tool calls clearly and aligns output-less tool icons", async ({ page }) => {
+  await openReply(page, "All checks passed.");
+  await page.evaluate(async (task) => {
+    const storePath = "/src/features/agents/store.ts";
+    const store = await import(storePath);
+    store.useAgents.setState({
+      tasks: new Map([[task.id, { ...task, status: "running" as const }]]),
+      entries: new Map([
+        [
+          task.id,
+          [
+            { type: "thought", text: "**Checking CI Status**\n\nInspecting workflow runs." },
+            {
+              type: "tool",
+              id: "t1",
+              title: "gh pr checks 3631 --repo l0ng-ai/openidea",
+              kind: "execute",
+              status: "completed",
+              locations: [],
+              output: "All checks pending",
+              diffs: [],
+            },
+            { type: "thought", text: "**Tracking Continuous Integration**\n\nWaiting for E2E." },
+            {
+              type: "tool",
+              id: "t2",
+              title: "read_bash",
+              kind: "other",
+              status: "completed",
+              locations: [],
+              output: "E2E pass",
+              diffs: [],
+            },
+            {
+              type: "tool",
+              id: "t3",
+              title: "read_bash",
+              kind: "other",
+              status: "running",
+              locations: [],
+              output: "",
+              diffs: [],
+            },
+          ],
+        ],
+      ]),
+    });
+    store.openTaskInEditorLocation(task.id);
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  const summary = stream.locator("[class*='_processSummary_']").first();
+  await summary.click();
+  await expect(stream.getByText("Checking CI Status")).toBeVisible();
+
+  const layout = await stream.evaluate((root) => {
+    const summaryChevron = root.querySelector<SVGElement>("[class*='_processChevron_']")!.getBoundingClientRect();
+    const processBody = root.querySelector<HTMLElement>("[class*='_processBody_']")!.getBoundingClientRect();
+    const thoughtChevron = root.querySelector<SVGElement>("[class*='_thoughtChevron_']")!.getBoundingClientRect();
+    const toolRows = [...root.querySelectorAll<HTMLElement>("[class*='_tool_']")];
+    const expandableToolChevron = toolRows[0]!
+      .querySelector<SVGElement>("[class*='_toolChevron_']")!
+      .getBoundingClientRect();
+    const completedReadIcon = [...toolRows[1]!.querySelectorAll("svg")].at(-1)!.getBoundingClientRect();
+    const runningReadIcon = toolRows[2]!.querySelector("svg")!.getBoundingClientRect();
+    return {
+      summaryChevronCenter: summaryChevron.left + summaryChevron.width / 2,
+      guideLeft: processBody.left,
+      summaryToThoughtIndent: thoughtChevron.left - summaryChevron.left,
+      thoughtToToolIndent: expandableToolChevron.left - thoughtChevron.left,
+      iconLeftDiff: Math.abs(completedReadIcon.left - runningReadIcon.left),
+    };
+  });
+
+  // Guide line drops from the center of the process summary chevron.
+  expect(Math.abs(layout.guideLeft - layout.summaryChevronCenter)).toBeLessThanOrEqual(1.5);
+  // Thoughts indent clearly inside the process run, and tool calls indent under their thought step.
+  expect(layout.summaryToThoughtIndent).toBeGreaterThanOrEqual(20);
+  expect(layout.thoughtToToolIndent).toBeGreaterThanOrEqual(14);
+  // Output-less running tool rows align their kind icon with expandable tool rows.
+  expect(layout.iconLeftDiff).toBeLessThanOrEqual(1);
+});
+
+test("aligns Mermaid diagrams in replies to their container align attribute", async ({ page }) => {
+  const diagram = ["```mermaid", "flowchart LR", "  A --> B", "```"].join("\n");
+  await openReply(
+    page,
+    [
+      "Summary across the full width of the reply column so diagrams sit inside a wider message body.",
+      "",
+      diagram,
+      "",
+      '<div align="left" style="width: 960px; max-width: 100%; margin-left: 0; text-align: left;">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="right">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="left"><div align="center">',
+      "",
+      diagram,
+      "",
+      "</div></div>",
+    ].join("\n"),
+  );
+  await page.evaluate(async (id) => {
+    const storePath = "/src/features/agents/store.ts";
+    const store = await import(storePath);
+    store.openTaskInEditorLocation(id);
+  }, TASK.id);
+
+  const reply = page.locator("[class*='_stream_']:visible [class*='_markdown_']").first();
+  const outputs = reply.locator("[data-mermaid-state='ok'] .mermaid-output");
+  await expect(outputs).toHaveCount(4);
+
+  const offsets = await outputs.evaluateAll((els) =>
+    els.map((out) => {
+      const outRect = out.getBoundingClientRect();
+      const svgRect = out.querySelector("svg")!.getBoundingClientRect();
+      return {
+        leftGap: svgRect.left - outRect.left,
+        rightGap: outRect.right - svgRect.right,
+      };
+    }),
+  );
+
+  expect(offsets[0]!.leftGap).toBeGreaterThan(20);
+  expect(Math.abs(offsets[0]!.leftGap - offsets[0]!.rightGap)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(offsets[1]!.leftGap)).toBeLessThanOrEqual(1);
+  expect(offsets[1]!.rightGap).toBeGreaterThan(40);
+  expect(offsets[2]!.leftGap).toBeGreaterThan(40);
+  expect(Math.abs(offsets[2]!.rightGap)).toBeLessThanOrEqual(1);
+  expect(Math.abs(offsets[3]!.leftGap - offsets[3]!.rightGap)).toBeLessThanOrEqual(1.5);
+});

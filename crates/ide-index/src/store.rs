@@ -15,8 +15,8 @@ const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 /// Bump when [`FileRecord`] or its encoding changes. The `-fork` suffix marks
 /// the fork's extra snapshot columns (occurrences + facts): an upstream
 /// snapshot without them must not warm-start a fork build, whose find-usages
-/// map would come up empty.
-const SCHEMA: &str = "openidea-index-7-fork";
+/// map would come up empty. 8-fork: upstream 4's symbol base names on top.
+const SCHEMA: &str = "openidea-index-8-fork";
 
 /// The real Git directory for a checkout/worktree (`root/.git` may be a file
 /// containing `gitdir: ...`).
@@ -130,6 +130,9 @@ struct FlatSymbol {
     name_len: u32,
     container_start: u32,
     container_len: u32,
+    /// Base names joined with `'\0'` (`bases_len` 0 when the symbol has none).
+    bases_start: u32,
+    bases_len: u32,
     kind: SymbolKind,
     range: Range,
 }
@@ -361,11 +364,14 @@ impl Snapshot {
                     let start = s.container_start as usize;
                     &self.text[start..start + s.container_len as usize]
                 });
+                let bases_start = s.bases_start as usize;
+                let bases = &self.text[bases_start..bases_start + s.bases_len as usize];
                 StoredSymbol {
                     name: name.to_owned(),
                     kind: s.kind,
                     container: container.map(str::to_owned),
                     range: s.range,
+                    bases: bases.split('\0').filter(|b| !b.is_empty()).map(str::to_owned).collect(),
                 }
             })
             .collect();
@@ -559,11 +565,15 @@ impl Store {
                     }
                     None => (u32::MAX, 0),
                 };
+                let bases_start = fit(snap.text.len())?;
+                snap.text.push_str(s.bases);
                 snap.symbols.push(FlatSymbol {
                     name_start,
                     name_len: fit(s.name.len())?,
                     container_start,
                     container_len,
+                    bases_start,
+                    bases_len: fit(s.bases.len())?,
                     kind: s.kind,
                     range: s.range,
                 });
@@ -792,6 +802,7 @@ mod tests {
                 kind: SymbolKind::Class,
                 container: Some("Order".into()),
                 range: Range::default(),
+                bases: vec!["Base".into()],
             }],
             // Fork columns: the find-usages occurrences and module facts must
             // survive the snapshot round trip, not just the symbols.
@@ -834,6 +845,7 @@ mod tests {
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "OrderController");
         assert_eq!(symbols[0].container.as_deref(), Some("Order"));
+        assert_eq!(symbols[0].bases, vec!["Base".to_string()], "bases survive the snapshot");
         assert_eq!(entry.occurrences.len(), 2);
         assert!(entry.occurrences.iter().any(|(n, _, q, css)| n.as_ref() == "card" && *q && *css));
         assert_eq!(entry.facts.imports.len(), 1);
