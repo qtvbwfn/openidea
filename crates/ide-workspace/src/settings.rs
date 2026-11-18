@@ -964,6 +964,7 @@ mod tests {
                 "wrapAtMargin": false,
                 "disabledPluginChecks": [],
                 "doubleClickOpensDiff": null,
+                "agentInstructions": "",
             })
         );
     }

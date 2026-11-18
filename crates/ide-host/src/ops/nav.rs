@@ -1,7 +1,7 @@
 use super::doc::blocking;
 use crate::Host;
 use crate::Project;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::paths::{AliasMap, resolve_spec};
 use ide_core::{CancellationToken, DocId, IdeResult, IpcPath, LanguageId, Location, Pos, SymbolKind};
 use ide_index::{ExtensionCount, FileMatch, IndexStatus, ProjectIndex, SymbolFilter, SymbolMatch};
@@ -49,30 +49,37 @@ fn reference_roots(project: &Project) -> (PathBuf, Vec<PathBuf>) {
     (project.root.clone(), resources)
 }
 
+#[command(trust = always)]
 pub fn index_status(host: &Host, window: &str) -> IdeResult<IndexStatus> {
     Ok(host.project(window)?.index.status())
 }
 
-/// The project's file extensions, most common first.
+#[command(trust = always)]
 pub fn index_file_extensions(host: &Host, window: &str) -> IdeResult<Vec<ExtensionCount>> {
+    // Most common first.
     Ok(host.project(window)?.index.file_extensions())
 }
 
+#[command(trust = always)]
 pub async fn find_files(host: &Host, window: &str, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
     let project = host.project(window)?;
     blocking(move || Ok(project.index.find_files(&query, limit as usize))).await
 }
 
+#[command(trust = always)]
 pub async fn find_files_named(host: &Host, window: &str, name: String) -> IdeResult<Vec<IpcPath>> {
     let project = host.project(window)?;
     blocking(move || Ok(project.index.files_named(&name).into_iter().map(Into::into).collect())).await
 }
 
+/// Folders holding indexed files, for `@` references.
+#[command(trust = always)]
 pub async fn find_dirs(host: &Host, window: &str, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
     let project = host.project(window)?;
     blocking(move || Ok(project.index.find_dirs(&query, limit as usize))).await
 }
 
+#[command(trust = always)]
 pub async fn find_symbols(
     host: &Host,
     window: &str,
@@ -84,35 +91,40 @@ pub async fn find_symbols(
     blocking(move || Ok(project.index.find_symbols(&query, filter, limit as usize))).await
 }
 
-/// Index symbols named exactly one of `names` inside `within` (an agent task's folder),
-/// at most `SYMBOLS_PER_NAME` each: every name an agent reply shows, in one lookup.
+/// Index symbols named exactly one of `names` inside `within` (an agent task's folder).
+#[command(trust = always)]
 pub async fn find_symbols_named(
     host: &Host,
     window: &str,
     names: Vec<String>,
     within: IpcPath,
 ) -> IdeResult<Vec<SymbolMatch>> {
+    // At most `SYMBOLS_PER_NAME` each: every name an agent reply shows, in one lookup.
     const SYMBOLS_PER_NAME: usize = 50;
     let project = host.project(window)?;
     blocking(move || Ok(project.index.symbols_named_any(&names, &PathBuf::from(within), SYMBOLS_PER_NAME))).await
 }
 
+#[command(trust = always)]
 pub fn mark_recent(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
     host.project(window)?.index.mark_recent(&path);
     Ok(())
 }
 
+#[command(trust = always)]
 pub fn remove_recent(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
     host.project(window)?.index.remove_recent(&path);
     Ok(())
 }
 
 /// Recently opened files, most recent first (⌘E).
+#[command(trust = always)]
 pub fn recent_files(host: &Host, window: &str) -> IdeResult<Vec<ide_core::IpcPath>> {
     Ok(host.project(window)?.index.recent_files().into_iter().map(Into::into).collect())
 }
 
 /// The web reference at `pos` of `doc` and its targets; `None` when there is no reference.
+#[command(trust = always)]
 pub async fn web_goto(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<WebGoto>> {
     let project = host.project(window)?;
     let syntax = host.syntax();
@@ -149,12 +161,14 @@ pub async fn web_goto(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeRes
     .await
 }
 
-/// The file a Python import path names: `a.b.c` is `a/b/c.py(i)` or `a/b/c/__init__.py(i)`
-/// in the project or one of its content roots (an attached dependency project included);
-/// `.x` names it relative to `from`'s directory. Neither the language server (it analyses a
-/// single root) nor the definition index resolves a package segment, so ⌘B on the `a.b` of
-/// `from a.b import x` needs this.
+/// The file a Python import path (`a.b.c`, or `.x` relative to `from`) names; `None` when
+/// no project or content root has it.
+#[command(trust = always)]
 pub async fn nav_resolve_module(host: &Host, window: &str, name: String, from: IpcPath) -> IdeResult<Option<IpcPath>> {
+    // `a.b.c` is `a/b/c.py(i)` or `a/b/c/__init__.py(i)` in the project or one of its content roots
+    // (an attached dependency project included). Neither the language server (it analyses a single
+    // root) nor the definition index resolves a package segment, so ⌘B on the `a.b` of
+    // `from a.b import x` needs this.
     let project = host.project(window)?;
     blocking(move || {
         let dots = name.len() - name.trim_start_matches('.').len();
@@ -186,17 +200,19 @@ pub async fn nav_resolve_module(host: &Host, window: &str, name: String, from: I
     .await
 }
 
-/// Index definitions named `name` in the other roots `from` may navigate into (its configured
-/// dependencies and extra content roots — see `navigation_roots`): the cross-root answer when
-/// the language server cannot resolve an import into an attached dependency project. `from`'s
-/// own root is left out: the server sees it, so a name it could not resolve there is not
-/// answered by every declaration that happens to share it (any `save` for `repo.save()`).
+/// Index definitions named `name` within the roots `from` may navigate into (its own root
+/// plus its configured dependencies).
+#[command(trust = always)]
 pub async fn nav_index_definitions(
     host: &Host,
     window: &str,
     name: String,
     from: IpcPath,
 ) -> IdeResult<Vec<SymbolMatch>> {
+    // The cross-root answer when the language server cannot resolve an import into an attached
+    // dependency project. `from`'s own root is left out: the server sees it, so a name it could
+    // not resolve there is not answered by every declaration that happens to share it (any `save`
+    // for `repo.save()`).
     let project = host.project(window)?;
     blocking(move || {
         let roots = crate::project::navigation_roots(&project, &from);
@@ -211,11 +227,12 @@ pub async fn nav_index_definitions(
     .await
 }
 
-/// Every Python class in the project (attached dependency roots included) and its base
-/// names, answered from the project index: its symbols already carry the bases, and it
-/// covers content roots, so this is the whole-project answer the UI uses for inheritance
-/// gutter markers when no type-hierarchy provider exists. No file is parsed here.
+/// Every Python class in the project (attached dependency roots included) and its base names,
+/// for native inheritance gutter markers.
+#[command(trust = always)]
 pub async fn nav_inheritance(host: &Host, window: &str) -> IdeResult<Vec<ClassInheritance>> {
+    // The index covers content roots, so this is the whole-project answer when no type-hierarchy
+    // provider exists.
     let project = host.project(window)?;
     let syntax = host.syntax();
     blocking(move || {
@@ -288,6 +305,7 @@ static CLASS_BASES: std::sync::LazyLock<parking_lot::Mutex<ClassBasesCache>> =
     std::sync::LazyLock::new(Default::default);
 
 /// The existing file or directory a path written in `from` names (`href`, `url()`, a string literal).
+#[command(trust = always)]
 pub async fn fs_resolve_reference(
     host: &Host,
     window: &str,
@@ -304,6 +322,7 @@ pub async fn fs_resolve_reference(
 }
 
 /// Files and folders that continue `prefix`, a path being typed in `from`.
+#[command(trust = always)]
 pub async fn path_completions(
     host: &Host,
     window: &str,
@@ -320,6 +339,7 @@ pub async fn path_completions(
 }
 
 /// Paths in an HTML document or stylesheet that name no existing file.
+#[command(trust = always)]
 pub async fn web_unresolved_references(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<FileReference>> {
     let project = host.project(window)?;
     let syntax = host.syntax();
@@ -342,41 +362,6 @@ pub async fn web_unresolved_references(host: &Host, window: &str, doc: DocId) ->
     .await
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("index_status", |c| async move { index_status(&c.host, &c.window) });
-    d.add("index_file_extensions", |c| async move { index_file_extensions(&c.host, &c.window) });
-    d.add("find_files", |c| async move { find_files(&c.host, &c.window, c.arg("query")?, c.arg("limit")?).await });
-    d.add("find_files_named", |c| async move { find_files_named(&c.host, &c.window, c.arg("name")?).await });
-    d.add("find_dirs", |c| async move { find_dirs(&c.host, &c.window, c.arg("query")?, c.arg("limit")?).await });
-    d.add("find_symbols", |c| async move {
-        find_symbols(&c.host, &c.window, c.arg("query")?, c.arg("filter")?, c.arg("limit")?).await
-    });
-    d.add("find_symbols_named", |c| async move {
-        find_symbols_named(&c.host, &c.window, c.arg("names")?, c.arg("within")?).await
-    });
-    d.add("mark_recent", |c| async move { mark_recent(&c.host, &c.window, c.arg("path")?) });
-    d.add("remove_recent", |c| async move { remove_recent(&c.host, &c.window, c.arg("path")?) });
-    d.add("recent_files", |c| async move { recent_files(&c.host, &c.window) });
-    d.add("web_goto", |c| async move { web_goto(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await });
-    d.add("nav_resolve_module", |c| async move {
-        nav_resolve_module(&c.host, &c.window, c.arg("name")?, c.arg("from")?).await
-    });
-    d.add("nav_index_definitions", |c| async move {
-        nav_index_definitions(&c.host, &c.window, c.arg("name")?, c.arg("from")?).await
-    });
-    d.add("nav_inheritance", |c| async move { nav_inheritance(&c.host, &c.window).await });
-    d.add("fs_resolve_reference", |c| async move {
-        fs_resolve_reference(&c.host, &c.window, c.arg("from")?, c.arg("value")?).await
-    });
-    d.add("path_completions", |c| async move {
-        path_completions(&c.host, &c.window, c.arg("from")?, c.arg("prefix")?).await
-    });
-    d.add("web_unresolved_references", |c| async move {
-        web_unresolved_references(&c.host, &c.window, c.arg("doc")?).await
-    });
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexGoto {
@@ -393,6 +378,7 @@ pub enum IndexNote {
     Candidate,
 }
 
+#[command(trust = always)]
 pub async fn index_goto(host: &Host, window: &str, doc: DocId, pos: Pos, word: String) -> IdeResult<Option<IndexGoto>> {
     let project = host.project(window)?;
     let syntax = host.syntax();
@@ -545,6 +531,7 @@ fn file_location(index: &ProjectIndex, path: &Path) -> Location {
     Location { path: path.into(), range, uri: None }
 }
 
+#[command(trust = always)]
 pub async fn index_usages(host: &Host, window: &str, name: String, css: bool) -> IdeResult<Vec<Location>> {
     let project = host.project(window)?;
     let index = project.index.clone();
@@ -571,3 +558,25 @@ fn pascal_case(word: &str) -> String {
         })
         .collect()
 }
+ide_command::domain!(
+    nav:
+    find_dirs,
+    find_files,
+    find_files_named,
+    find_symbols,
+    find_symbols_named,
+    fs_resolve_reference,
+    index_file_extensions,
+    index_goto,
+    index_status,
+    index_usages,
+    mark_recent,
+    nav_index_definitions,
+    nav_inheritance,
+    nav_resolve_module,
+    path_completions,
+    recent_files,
+    remove_recent,
+    web_goto,
+    web_unresolved_references,
+);

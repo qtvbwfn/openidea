@@ -20,6 +20,7 @@ pub mod paths;
 pub mod platform;
 pub mod process;
 pub mod project_dir;
+pub mod project_env;
 pub mod project_roots;
 pub mod proxy_settings;
 pub mod real_path;
