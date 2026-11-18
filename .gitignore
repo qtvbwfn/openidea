@@ -41,6 +41,8 @@ CLAUDE.local.md
 !.claude/skills/verify
 !.claude/skills/issue-fix
 !.claude/skills/eval
+.mimosa
+.vitest
 
 # Local reference screenshots
 pycharm-screenshots/
