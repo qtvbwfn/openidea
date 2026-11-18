@@ -6,6 +6,7 @@ use ide_jsonrpc::{Framing, Handler, Peer, codes};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 fn sample_models_list() -> Value {
     json!({
