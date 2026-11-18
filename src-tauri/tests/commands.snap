@@ -292,9 +292,9 @@ http_history_get                             trusted            desktop      bin
 http_requests                                trusted            desktop      bindings sync
 http_variable_definitions                    trusted            desktop      bindings async
 index_file_extensions                        always             project_host bindings sync
-index_goto                                   trusted            desktop      bindings async
+index_goto                                   always             project_host bindings async
 index_status                                 always             project_host bindings sync
-index_usages                                 trusted            desktop      bindings async
+index_usages                                 always             project_host bindings async
 inspect_code                                 trusted            project_host bindings async
 java_build_workspace                         trusted            project_host bindings async
 java_debug_server                            trusted            project_host bindings async
