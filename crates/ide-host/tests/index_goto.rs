@@ -53,7 +53,7 @@ async fn opened(relative: &str) -> (Arc<Host>, PathBuf, DocId, String) {
 
     let path = root.join(relative);
     let text = std::fs::read_to_string(&path).unwrap();
-    let doc = ops::doc::open(&host, "main", path).await.unwrap();
+    let doc = ops::doc::doc_open(&host, "main", path).await.unwrap();
     (host, root, doc.id, text)
 }
 

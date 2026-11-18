@@ -87,8 +87,8 @@ async fn index_goto_agrees_with_the_language_server() {
     // wait for the TypeScript server to answer definitions at all.
     let mut docs: Vec<(DocId, String)> = Vec::new();
     for file in ["src/App.vue", "src/main.ts", "src/components/UserCard.vue"] {
-        let info = ops::doc::open(&host, WINDOW, root.join(file)).await.unwrap();
-        let info = ops::doc::snapshot(&host, WINDOW, info.id).await.unwrap();
+        let info = ops::doc::doc_open(&host, WINDOW, root.join(file)).await.unwrap();
+        let info = ops::doc::doc_snapshot(&host, WINDOW, info.id).await.unwrap();
         docs.push((info.id, info.text));
     }
     // Warm up on a plain TS file: `createApp` resolves into node_modules the
