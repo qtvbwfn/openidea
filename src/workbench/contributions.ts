@@ -1135,6 +1135,8 @@ export interface SettingsPageContribution {
   component?: ComponentType;
   /** The page edits settings that a project can override (Global / This project switch). */
   projectScope?: boolean;
+  /** The page fills the area under the header edge to edge, without the usual padding. */
+  bleed?: boolean;
   /** The scope the switch starts on (default: global). */
   defaultScope?: "global" | "project";
 }
@@ -1180,6 +1182,14 @@ export function useSettingsPageFocus(): SettingsPageFocus {
   return useContext(SettingsPageFocusContext);
 }
 
+/** Where a settings page may portal controls into the page header, beside its title. */
+export const SettingsHeaderSlotContext = createContext<HTMLElement | null>(null);
+
+/** The header slot of the settings page being shown; null outside the Settings dialog. */
+export function useSettingsHeaderSlot(): HTMLElement | null {
+  return useContext(SettingsHeaderSlotContext);
+}
+
 export const SettingsFormContext = createContext<SettingsForm | null>(null);
 
 /** The form of the settings page being shown (provided by the Settings dialog). */
@@ -1199,6 +1209,28 @@ export function registerSettingsPage(page: SettingsPageContribution): () => void
       const pages = new Map(s.pages);
       pages.delete(page.id);
       return { pages };
+    });
+}
+
+/** Registers a batch of settings pages in one store update; returns a batched disposer. */
+export function registerSettingsPages(list: SettingsPageContribution[]): () => void {
+  if (!list.length) return () => {};
+  const owned = new Map<string, SettingsPageContribution>();
+  for (const page of list) owned.set(page.id, page);
+  useSettingsPages.setState((s) => {
+    const pages = new Map(s.pages);
+    for (const [id, page] of owned) pages.set(id, page);
+    return { pages };
+  });
+  return () =>
+    useSettingsPages.setState((s) => {
+      let next: Map<string, SettingsPageContribution> | null = null;
+      for (const [id, page] of owned) {
+        if (s.pages.get(id) !== page) continue;
+        next ??= new Map(s.pages);
+        next.delete(id);
+      }
+      return next ? { pages: next } : s;
     });
 }
 
