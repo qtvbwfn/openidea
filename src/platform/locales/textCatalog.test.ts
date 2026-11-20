@@ -104,6 +104,7 @@ const UNTRANSLATED = new Set<string>([
   // Product names
   "Cargo",
   "CMake",
+  "Flutter",
   "Prettier",
   "oxfmt",
   "Ruff",
@@ -168,6 +169,7 @@ const UNTRANSLATED = new Set<string>([
   "Eclipse Temurin",
   "EditorConfig",
   "Epytext",
+  "Flutter",
   "Git",
   "GitHub",
   "Go",
@@ -271,6 +273,7 @@ const UNTRANSLATED = new Set<string>([
   "go env GOPATH",
   "kebab-case",
   "KEY=value; OTHER=value",
+  "main.py",
   "my-mcp-server",
   "mysite.settings_test",
   "NAME",
@@ -293,6 +296,7 @@ const UNTRANSLATED = new Set<string>([
   "run python",
   "snake_case",
   "tests",
+  "uvicorn",
   '{ "section": { "key": "value" } }',
   // Identifiers that only look like text: icon names, error codes, categories, console output
   "app",

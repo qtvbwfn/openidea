@@ -86,6 +86,7 @@ import {
   VIEW_MODES,
   autoExpand,
   clearRevealRequest,
+  explainHiddenPath,
   loadDir,
   loadOutline,
   revealPath,
@@ -337,24 +338,29 @@ const Row = memo(function Row({
         />
       ) : (
         <>
-          <HighlightedText
-            className={clsx(
-              styles.label,
-              node.root && styles.rootName,
-              // Only the project itself is bold (IDEA); contributed roots like Scratches are not.
-              node.root && !node.icon && styles.rootLabel,
-              // Maven / Gradle module folders are bold too, as in IDEA.
-              moduleFolder && styles.moduleLabel,
-              faded && !deco.color && styles.excluded,
-              deco.error && styles.error,
+          <span className={styles.labelGroup}>
+            <HighlightedText
+              className={clsx(
+                styles.label,
+                // Project and module roots use semibold labels.
+                node.root && !node.icon && styles.rootLabel,
+                moduleFolder && styles.moduleLabel,
+                faded && !deco.color && styles.excluded,
+                file?.deprecated && styles.deprecated,
+                deco.error && styles.error,
+              )}
+              style={deco.color ? { color: deco.color } : undefined}
+              text={node.label}
+              indices={matches}
+              tone="accent"
+            />
+            {deco.suffix && <DecorationSuffix segments={deco.suffix} color={deco.suffixColor} />}
+            {detail && (
+              <span className={styles.detail} title={detail}>
+                {detail}
+              </span>
             )}
-            style={deco.color ? { color: deco.color } : undefined}
-            text={node.label}
-            indices={matches}
-            tone="accent"
-          />
-          {deco.suffix && <DecorationSuffix segments={deco.suffix} color={deco.suffixColor} />}
-          {detail && <span className={styles.detail}>{detail}</span>}
+          </span>
           {deco.badge && <span className={styles.badge}>{deco.badge}</span>}
         </>
       )}
@@ -418,8 +424,14 @@ const MemberRow = memo(function MemberRow({
       onPointerDown={(e) => onPointerDown(node, e)}
     >
       <SymbolBadge kind={badgeKind(item.kind)} className={styles.icon} />
-      <HighlightedText className={styles.label} text={item.name} indices={matches} tone="accent" />
-      {item.detail && <span className={styles.detail}>{item.detail}</span>}
+      <span className={styles.labelGroup}>
+        <HighlightedText className={styles.label} text={item.name} indices={matches} tone="accent" />
+        {item.detail && (
+          <span className={styles.detail} title={item.detail}>
+            {item.detail}
+          </span>
+        )}
+      </span>
     </span>
   );
 });
@@ -517,7 +529,7 @@ export function ProjectView() {
   // Select a revealed path once its row exists.
   useEffect(() => {
     if (!revealRequest) return;
-    const { path, focus, seq } = revealRequest;
+    const { path, focus, seq, explain } = revealRequest;
     const exact = model.keyOfPath.get(path);
     const loadingAncestors = info.pending.some((p) => p === path || isInside(path, p));
     if (!exact && loadingAncestors) return;
@@ -528,6 +540,8 @@ export function ProjectView() {
     handle.current?.reveal(key);
     revealing.current = false;
     if (focus) handle.current?.focus();
+    const shown = model.byKey.get(key)?.path;
+    if (explain && !exact && shown) explainHiddenPath(path, shown);
   }, [revealRequest, model, info]);
 
   // Autoscroll from source: follow the active editor.
@@ -902,7 +916,7 @@ export function ProjectView() {
         </div>
       )}
       <Tree<ProjectNode>
-        horizontalScroll
+        horizontalScroll={options.horizontalScroll}
         aria-label="Project"
         focusContext="projectViewFocus"
         handleRef={setTreeHandle}
