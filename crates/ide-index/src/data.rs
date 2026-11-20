@@ -156,9 +156,12 @@ pub(crate) struct FileEntry {
     pub facts: Facts,
     /// The file's own occurrences (names + ranges + flags), for inverted-map
     /// removal.
-    pub occurrences: Box<[(Box<str>, Range, bool, bool)]>,
+    pub occurrences: Box<[OccurrenceRow]>,
     pub ignored: bool,
 }
+
+/// One occurrence record: name, range, member-position flag, CSS-class token flag.
+pub(crate) type OccurrenceRow = (Box<str>, Range, bool, bool);
 
 impl FileEntry {
     /// Splits the record into the entry and its symbols; the symbols are flattened into
@@ -209,7 +212,6 @@ pub(crate) struct OccSlot {
     pub slot: u32,
     pub range: Range,
     pub qualified: bool,
-    pub css: bool,
 }
 
 /// The hot fields of one file slot, packed for the query scan; no pointers.
@@ -663,7 +665,7 @@ impl IndexData {
                 Some(list) => list,
                 None => map.entry(name.clone()).or_default(),
             };
-            list.push(OccSlot { slot, range: *range, qualified: *qualified, css: *css });
+            list.push(OccSlot { slot, range: *range, qualified: *qualified });
             self.occ_total += 1;
         }
     }
