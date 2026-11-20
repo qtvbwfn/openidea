@@ -39,8 +39,13 @@ fn shell_directories_go_through_paths() {
         let Ok(text) = fs::read_to_string(&file) else { continue };
         for (number, line) in text.lines().enumerate() {
             for forbidden in FORBIDDEN {
-                if line.contains(forbidden) {
-                    hits.push(format!("{relative}:{}: {forbidden}", number + 1));
+                if let Some(at) = line.find(forbidden) {
+                    // `ide_host::data_dirs::config_dir(…)` ends with `data_` at that
+                    // offset: it is the upstream resolver the shell is meant to use,
+                    // not a direct `dirs` lookup.
+                    if !line[..at].ends_with("data_") {
+                        hits.push(format!("{relative}:{}: {forbidden}", number + 1));
+                    }
                 }
             }
         }
