@@ -24,6 +24,8 @@ export const findStyles = {
   ".cm-openidea-findMatch": {
     backgroundColor: "var(--editor-search)",
     color: "var(--fg-search-match, inherit)",
+    // Its own colour, over the text fill of an identifier highlight around the match.
+    WebkitTextFillColor: "currentcolor",
     borderRadius: "2px",
   },
   ".cm-openidea-findExcluded": {
@@ -38,6 +40,11 @@ export const findStyles = {
     color: "var(--fg-search-match, inherit)",
     outline: "1px solid color-mix(in srgb, var(--editor-search-current) 60%, var(--fg-strong))",
   },
+};
+
+/** Marks colour text with an inherited text fill; widgets inside them keep their own colours. */
+export const markWidgetStyles = {
+  '.cm-content [contenteditable="false"]': { WebkitTextFillColor: "currentcolor" },
 };
 
 /** The caret and Settings › Editor › General › Appearance caret options (`caretExtension`), also for viewers. */
@@ -219,6 +226,8 @@ export const openideaTheme = EditorView.theme({
   ".cm-selectionMatch": {
     backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent))",
   },
+  // IDEA paints these with IDENTIFIER_UNDER_CARET_ATTRIBUTES, except the selection itself.
+  ".cm-selectionMatch:not(.cm-selectionMatch-main)": { WebkitTextFillColor: "var(--fg-identifier-under-caret)" },
   // IDEA's MATCHED_BRACE_ATTRIBUTES (bold in dark schemes only) and MATCHED_TAG_NAME (never bold).
   ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
     backgroundColor: "var(--editor-brace)",
@@ -267,14 +276,23 @@ export const openideaTheme = EditorView.theme({
   },
   ".cm-openidea-laneDeleted": {
     position: "absolute",
-    left: "0",
-    top: "-3px",
+    left: "-4px",
+    top: "-6px",
+    width: "12px",
+    height: "12px",
+    cursor: "pointer",
+    zIndex: "1",
+  },
+  ".cm-openidea-laneDeleted::after": {
+    content: '""',
+    position: "absolute",
+    left: "4px",
+    top: "3px",
     width: "0",
     height: "0",
     borderTop: "3px solid transparent",
     borderBottom: "3px solid transparent",
     borderLeft: "6px solid var(--lane-color)",
-    zIndex: "1",
   },
   ".cm-foldGutter": { width: "16px" },
   ".cm-foldGutter .cm-gutterElement": {
@@ -343,6 +361,7 @@ export const openideaTheme = EditorView.theme({
 
   // Find in file (cm/find.ts)
   ...findStyles,
+  ...markWidgetStyles,
   // Find in Files preview matches (search/find/parts.tsx)
   ".cm-openidea-searchResult": { backgroundColor: "var(--bg-search-result)" },
 
@@ -410,4 +429,8 @@ export const openideaTheme = EditorView.theme({
   "&.cm-lineWrapping .cm-line, .cm-lineWrapping .cm-line": {
     paddingRight: "calc(24px + var(--cm-corner-inset, 0px))",
   },
+  // The wrapped-part indent is a negative `text-indent` on the line (prefs.ts). Widgets inherit
+  // it, and a block-level box inside one (the inline blame, a line-end hint) would start its
+  // text that many columns to the left, over the code.
+  ".cm-line [contenteditable='false']": { textIndent: "0" },
 });

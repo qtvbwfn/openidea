@@ -15,7 +15,7 @@ import {
 import { getContext } from "@/platform/context";
 import { clearProblems, installProblemsEvents, problemsReport, useProblems } from "./problemsStore";
 import { installProblemDecorations } from "./decorations";
-import { ProblemsHeaderActions, ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
+import { ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
 import { UsagesTabs, UsagesView, useUsagesHeaderMenu } from "./UsagesView";
 import { UsagesPopup } from "./UsagesPopup";
 import { findUsages, rerunActiveUsages, resetUsages, showUsageResults, showUsagesPopup } from "./usages";
@@ -29,12 +29,7 @@ import { installWorkspaceEditUndo } from "./workspaceUndo";
 const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 
 function useErrorBadge(): number | null {
-  return useProblems((s) => {
-    let n = 0;
-    for (const sources of s.map.values())
-      for (const items of sources.values()) for (const d of items) if (d.severity === "error") n++;
-    return n || null;
-  });
+  return useProblems((s) => s.counts.error || null);
 }
 
 export function activate(): () => void {
@@ -84,7 +79,6 @@ export function activate(): () => void {
       order: 30,
       component: ProblemsView,
       headerContent: ProblemsTabs,
-      headerActions: ProblemsHeaderActions,
       headerMenu: useProblemsHeaderMenu,
       useBadge: useErrorBadge,
     }),

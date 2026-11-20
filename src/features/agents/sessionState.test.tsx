@@ -15,6 +15,7 @@ import {
   hideImportSessions,
   importExternalSessions,
   refreshExternalSessions,
+  releaseClosedTaskCache,
   showImportSessions,
   useAgents,
 } from "./store";
@@ -23,7 +24,6 @@ import { useChangesOptions } from "./changesOptions";
 import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
 import { focusedSession } from "./sessionFocus";
-import { PLAYFUL_MIN_MS, PLAYFUL_WORD_MS, PLAYFUL_WORDS } from "./workingStatus";
 import styles from "./Session.module.css";
 import chipStyles from "./ReferenceChip.module.css";
 import { caretOf, textOf, typeIn } from "./composerTesting";
@@ -32,6 +32,7 @@ const backend = vi.hoisted(() => ({
   entries: new Map<string, AgentEntry[]>(),
   changes: [] as AgentChange[],
   changesCalls: 0,
+  turnChanges: [] as AgentChange[],
   grouped: { uncommitted: [] as AgentChange[], commits: [] as AgentCommit[] },
   groupedCalls: 0,
   rolledBack: [] as Array<[string, string[] | null, string | null]>,
@@ -72,6 +73,20 @@ vi.mock("@/platform/ipc", async (original) => ({
       status: "ok",
       data: { size: 1, binary: false, tooLarge: false },
     }),
+    agentContextUsage: vi.fn(async () => ({
+      status: "ok",
+      data: {
+        model: "Claude",
+        totalTokens: 3200,
+        maxTokens: 200000,
+        isAutoCompactEnabled: true,
+        autoCompactThreshold: 180000,
+        categories: [
+          { name: "System tools", tokens: 3200, kind: "used" },
+          { name: "Free space", tokens: 196800, kind: "free" },
+        ],
+      },
+    })),
     agentEntries: async (id: string, sub: string | null) => {
       const key = sub ? `${id}/${sub}` : id;
       backend.fetched.push(key);
@@ -83,7 +98,8 @@ vi.mock("@/platform/ipc", async (original) => ({
         };
       return { status: "ok", data: backend.entries.get(key) ?? [] };
     },
-    agentChanges: async () => {
+    agentChanges: async (_task: string, view: string | null) => {
+      if (view === "lastTurn") return { status: "ok", data: backend.turnChanges };
       backend.changesCalls += 1;
       return { status: "ok", data: backend.changes };
     },
@@ -229,12 +245,13 @@ beforeEach(() => {
   localStorage.clear();
   backend.changes = [];
   backend.changesCalls = 0;
+  backend.turnChanges = [];
   backend.grouped = { uncommitted: [], commits: [] };
   backend.groupedCalls = 0;
   backend.rolledBack = [];
   backend.external = [];
   // The flat list unless a test asks for the grouped view, so counts and selections stay as before.
-  useChangesOptions.setState({ groupByCommit: false });
+  useChangesOptions.setState({ groupByCommit: false, scope: "task" });
   backend.imported = [];
   backend.importError = null;
   backend.importErrors = new Map();
@@ -513,107 +530,17 @@ describe("working status", () => {
       }),
     });
   };
-  const playful = (status: HTMLElement) => status.querySelector("[aria-hidden]")?.textContent ?? null;
-  const playfulOn = (agents: object = {}) =>
-    useProject.setState({ settings: { agents: { playfulStatus: true, ...agents } } as never });
 
-  it("says plainly what the agent does by default", async () => {
-    vi.useFakeTimers();
-    running([tool("one", { status: "running" })]);
-    render(<SessionEditor input={input("A")} />);
-    await act(async () => {});
-    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS * 2));
-    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
-    expect(playful(status)).toBeNull();
-    expect(status).toHaveTextContent("Reading…");
-  });
-
-  it("is playful from the start, holds each word while the work goes on, and turns to the new work's words", async () => {
-    vi.useFakeTimers();
-    playfulOn();
-    running([tool("one", { status: "running" })]);
-    render(<SessionEditor input={input("A")} />);
-    await act(async () => {});
-    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
-    const word = playful(status);
-    expect(PLAYFUL_WORDS.reading).toContain(word);
-    // Screen readers still hear the fact.
-    expect(status.querySelector(`.${styles.srOnly}`)).toHaveTextContent("Reading…");
-
-    // More of the same work keeps the word its full time.
-    running([tool("one", { status: "running" }), tool("two", { status: "running" })]);
-    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS - 1000));
-    expect(playful(status)).toBe(word);
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    const second = playful(status);
-    expect(PLAYFUL_WORDS.reading.filter((w) => w !== word)).toContain(second);
-
-    // New work leaves the word a moment, then says the new work playfully too.
-    running([tool("one", { status: "running" }), { type: "agent", text: "Found it" }]);
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    expect(playful(status)).toBe(second);
-    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_MIN_MS - 1000));
-    expect(PLAYFUL_WORDS.writing).toContain(playful(status));
-    expect(status.querySelector(`.${styles.srOnly}`)).toHaveTextContent("Writing…");
-  });
-
-  it("with a quiet time, is factual until the agent reports nothing new for it, and again on progress", async () => {
-    vi.useFakeTimers();
-    playfulOn({ playfulAfterSeconds: 10 });
+  it("says what the agent does", async () => {
     running([tool("one", { status: "running" })]);
     render(<SessionEditor input={input("A")} />);
     await act(async () => {});
     const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
     expect(status).toHaveTextContent("Reading…");
-    expect(playful(status)).toBeNull();
 
-    await act(() => vi.advanceTimersByTimeAsync(9000));
-    expect(playful(status)).toBeNull();
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    const word = playful(status);
-    expect(PLAYFUL_WORDS.reading).toContain(word);
-
-    // Progress right after a word appeared leaves it a moment before the fact returns.
     running([tool("one", { status: "running" }), { type: "agent", text: "Found it" }]);
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    expect(playful(status)).toBe(word);
-    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_MIN_MS - 1000));
-    expect(playful(status)).toBeNull();
+    await act(async () => {});
     expect(status).toHaveTextContent("Writing…");
-  });
-
-  it("keeps each word its full time however soon the status turns playful", async () => {
-    vi.useFakeTimers();
-    playfulOn({ playfulAfterSeconds: 1 });
-    running([tool("one", { status: "running" })]);
-    render(<SessionEditor input={input("A")} />);
-    await act(async () => {});
-    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    const word = playful(status);
-    expect(PLAYFUL_WORDS.reading).toContain(word);
-    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS - 1000));
-    expect(playful(status)).toBe(word);
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    expect(PLAYFUL_WORDS.reading.filter((w) => w !== word)).toContain(playful(status));
-  });
-
-  it("shows the user's own words of the activity, and none where they left the list empty", async () => {
-    vi.useFakeTimers();
-    playfulOn({ playfulWords: { reading: ["Squinting really hard…"], working: [] } });
-    running([]);
-    render(<SessionEditor input={input("A")} />);
-    await act(async () => {});
-    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
-    // Nothing reported yet is `working`, whose list the user emptied.
-    expect(playful(status)).toBeNull();
-    expect(status).toHaveTextContent("Working…");
-
-    running([tool("one", { status: "running" })]);
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    expect(playful(status)).toBe("Squinting really hard…");
-    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS));
-    expect(playful(status)).toBe("Squinting really hard…");
   });
 });
 
@@ -2115,6 +2042,69 @@ describe("session state across tasks and hosts", () => {
     act(() => disconnect());
     expect(useAgents.getState().scrollPositions.size).toBe(0);
   });
+
+  it("bounds retained entries for closed tabs (including busy and subagent entries) and refreshes MRU order", () => {
+    const entries = new Map<string, AgentEntry[]>();
+    const entryLoads = new Map<string, { error: string | null }>();
+    const changes = new Map<string, AgentChange[]>();
+    const scrollPositions = new Map<string, { top: number; stick: boolean }>();
+    const tasks = new Map<string, AgentTask>();
+    const baseTask = useAgents.getState().tasks.get("A")!;
+    for (let i = 1; i <= 7; i++) {
+      const id = `T${i}`;
+      tasks.set(id, { ...baseTask, id, title: id, status: i === 2 ? "running" : "ready" });
+      entries.set(id, [{ type: "agent", text: `Reply ${id}` }]);
+      entries.set(`${id}/sub`, [{ type: "agent", text: `Sub ${id}` }]);
+      entryLoads.set(id, { error: "err" });
+      changes.set(id, [{ path: "a.ts", relPath: "a.ts", oldPath: null, kind: "modified", added: 1, removed: 0 }]);
+      scrollPositions.set(id, { top: 10, stick: false });
+    }
+    entries.set("gone", [{ type: "agent", text: "Deleted reply" }]);
+    useAgents.setState({ tasks, entries, entryLoads, changes, scrollPositions });
+    for (let i = 1; i <= 5; i++) releaseClosedTaskCache(`T${i}`);
+    // A deleted task's tab closing drops its data without taking one of the cached slots.
+    releaseClosedTaskCache("gone");
+    expect(useAgents.getState().entries.has("gone")).toBe(false);
+    expect(useAgents.getState().entries.has("T1")).toBe(true);
+    // Re-closing T1 refreshes it so T2 (even though running) becomes the oldest and is evicted next.
+    releaseClosedTaskCache("T1");
+    releaseClosedTaskCache("T6");
+    releaseClosedTaskCache("T7");
+    const state = useAgents.getState();
+    expect(state.entries.has("T1")).toBe(true);
+    expect(state.entries.has("T2")).toBe(false);
+    expect(state.entries.has("T2/sub")).toBe(false);
+    expect(state.entryLoads.has("T2")).toBe(false);
+    expect(state.changes.has("T2")).toBe(false);
+    expect(state.scrollPositions.has("T2")).toBe(false);
+    expect(state.entries.has("T3")).toBe(false);
+    expect(state.entries.has("T7")).toBe(true);
+  });
+
+  it("loads an archived task's conversation and changes again when it reopens after its cache was dropped", async () => {
+    backend.changes = [
+      {
+        path: "/project/kept-change.ts",
+        relPath: "kept-change.ts",
+        kind: "modified",
+        added: 1,
+        removed: 0,
+        oldPath: null,
+      },
+    ];
+    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
+    useAgents.setState((s) => ({
+      tasks: new Map(s.tasks).set("A", { ...s.tasks.get("A")!, status: "archived" }),
+    }));
+    releaseClosedTaskCache("A");
+    expect(useAgents.getState().entries.has("A")).toBe(false);
+    backend.fetched = [];
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("Answer A")).toBeInTheDocument();
+    const panel = await screen.findByRole("complementary", { name: "Changes" });
+    expect(await within(panel).findByText("kept-change.ts")).toBeInTheDocument();
+    expect(backend.fetched).toEqual(["A"]);
+  });
 });
 
 describe("meters in the task header", () => {
@@ -2123,6 +2113,24 @@ describe("meters in the task header", () => {
     useAgents.setState({ limits: new Map() });
   });
 
+  it("queries the active task only when context details are opened", async () => {
+    const { commands } = await import("@/platform/ipc");
+    const reported: AgentTask = {
+      ...task("A"),
+      capabilities: { contextUsage: true },
+      usage: { used: 3000, size: 200000, cost: null },
+    };
+    useAgents.setState({ tasks: new Map([["A", reported]]) });
+    render(<SessionEditor input={input("A")} />);
+    const meter = await screen.findByRole("button", { name: /^Context window/ });
+    expect(commands.agentContextUsage).not.toHaveBeenCalled();
+    fireEvent.click(meter);
+    expect(await screen.findByText("System tools")).toBeInTheDocument();
+    expect(commands.agentContextUsage).toHaveBeenCalledWith("A");
+    expect(screen.getByText("196,800")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Context window" })).toBeNull();
+  });
   it("shows the provider's usage limits by default and each meter as Settings › Tools › Agents › Chat allows", async () => {
     const reported: AgentTask = {
       ...task("A"),
@@ -2903,6 +2911,43 @@ describe("accept changes", () => {
     await screen.findByRole("complementary", { name: "Changes" });
     expect(screen.queryByRole("button", { name: /Accept .* Changes…/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Rollback All Changes…" })).toBeInTheDocument();
+  });
+});
+
+describe("last turn changes", () => {
+  const change = (path: string): AgentChange => ({
+    path: `/project/${path}`,
+    relPath: path,
+    kind: "modified",
+    added: 1,
+    removed: 0,
+    oldPath: null,
+  });
+
+  it("lists and rolls back only what the last turn changed, the session still counting the whole task", async () => {
+    backend.changes = [change("a.ts"), change("b.ts")];
+    backend.turnChanges = [change("b.ts")];
+    localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
+    useAgents.setState({ tasks: new Map([["A", { ...task("A"), status: "ready" }]]) });
+    render(<SessionEditor input={input("A")} />);
+    const pane = await screen.findByRole("complementary", { name: "Changes" });
+    expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
+
+    fireEvent.click(within(pane).getByRole("radio", { name: "Last Turn" }));
+    await waitFor(() => expect(within(pane).queryByText("a.ts")).toBeNull());
+    expect(within(pane).getByText("b.ts")).toBeInTheDocument();
+    expect(within(pane).getByText("Since the last turn started")).toBeInTheDocument();
+    expect(useChangesOptions.getState().scope).toBe("turn");
+    expect(screen.getByRole("button", { name: /2 changed files/ })).toBeInTheDocument();
+
+    fireEvent.click(within(pane).getByRole("button", { name: "Rollback All Changes…" }));
+    await waitFor(() => expect(backend.rolledBack).toEqual([["A", null, "lastTurn"]]));
+
+    backend.turnChanges = [];
+    fireEvent.click(within(pane).getByRole("button", { name: "Refresh" }));
+    expect(await within(pane).findByText("The last turn changed no files")).toBeInTheDocument();
+    fireEvent.click(within(pane).getByRole("radio", { name: "Whole Task" }));
+    expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
   });
 });
 

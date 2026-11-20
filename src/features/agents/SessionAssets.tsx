@@ -51,6 +51,7 @@ interface PopupSection {
   items: PopupItem[];
 }
 
+const MAX_GH_META = 500;
 /** Shared per-process cache so repeated renders/tabs never re-query `gh api` for the same PR or issue. */
 const ghMetaCache = new Map<string, Promise<RemoteItemMeta | null>>();
 const ghResolvedMeta = new Map<string, RemoteItemMeta | null>();
@@ -117,9 +118,14 @@ function fetchGithubMeta(
     .then((text) => parseGhItemResponse(text, kind))
     .catch(() => null)
     .then((meta) => {
-      ghResolvedMeta.set(cacheKey, meta);
+      if (ghMetaCache.get(cacheKey) === req) ghResolvedMeta.set(cacheKey, meta);
       return meta;
     });
+  if (ghMetaCache.size >= MAX_GH_META) {
+    const oldest = ghMetaCache.keys().next().value!;
+    ghMetaCache.delete(oldest);
+    ghResolvedMeta.delete(oldest);
+  }
   ghMetaCache.set(cacheKey, req);
   return req;
 }
@@ -198,13 +204,15 @@ export function SessionAssets({ task, entries, head, onFocusComposer }: SessionA
   const refsAnchor = useRef<HTMLButtonElement>(null);
   const artifactsAnchor = useRef<HTMLButtonElement>(null);
 
-  // Read `remote.origin.url` so `gh pr checks 123` / `gh issue view 456` resolve to `<owner>/<repo>`.
+  // Read `origin` (with any `~/.ssh/config` host alias resolved) so `gh pr checks 123` /
+  // `gh issue view 456` resolve to `<owner>/<repo>`.
   useEffect(() => {
     if (!isTauri()) return;
     let alive = true;
-    call(commands.vcsConfigGet(repoRoot, "remote.origin.url"))
-      .then((url) => {
-        if (alive) setRemoteUrl(url || null);
+    call(commands.vcsRemotes(repoRoot))
+      .then((remotes) => {
+        const origin = remotes.find((r) => r.name === "origin");
+        if (alive) setRemoteUrl(origin ? (origin.resolvedUrl ?? origin.url) : null);
       })
       .catch(() => {
         if (alive) setRemoteUrl(null);
