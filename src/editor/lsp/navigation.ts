@@ -471,8 +471,9 @@ async function gotoResolved(
     const before = view.state.doc;
     const plugin = await contributedNavigation(view, offset).catch(() => null);
     if (view.state.doc !== before || superseded()) return;
-    // ⌘B on a declaration shows its usages, also when a plugin links the name elsewhere (a
-    // MyBatis mapper method to its XML statement).
+    // Declaration names skip this direct shortcut: the host's `lsp_goto` answers with the
+    // plugin's target when its navigation graph has a link (a MyBatis mapper method to its
+    // XML statement); without a link the usages fallback below applies.
     if (plugin && !(kind === "definition" && (await onDeclarationName(view, offset)))) {
       if (superseded()) return;
       if (plugin.targets.length === 1) await navigateTo(plugin.targets[0]!);
@@ -588,7 +589,7 @@ async function gotoResolved(
     )
       return;
     if (superseded()) return;
-// ⌘B on a declaration's own name shows its usages also when the server has no definition
+    // ⌘B on a declaration's own name shows its usages also when the server has no definition
     // there instead of answering the declaration itself (kotlin-language-server).
     if (kind === "definition" && !fromSyntax && (await onDeclarationName(view, offset))) {
       if (superseded()) return;

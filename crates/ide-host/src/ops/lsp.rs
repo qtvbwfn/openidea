@@ -320,13 +320,12 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
 #[command(trust = trusted)]
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
     let target = position_document(host, window, doc, pos).await?;
-    // ⌘B on a declaration shows its usages, also when a plugin's index links the name elsewhere
-    // (a MyBatis mapper method to its XML statement): the server's answer comes along for the
-    // editor to tell.
+    // Upstream #3238: ⌘B on a declaration shows its usages, even when a plugin's index links
+    // the name elsewhere. The fork answers with the plugin's target instead (a MyBatis mapper
+    // method to its XML statement); the server's usages answer applies when the graph has no link.
     if target == doc
         && kind == GotoKind::Definition
         && let Some(plugins) = crate::plugins::editor_plugin_host()
-        && !on_declaration_name(host, window, doc, pos).await
     {
         let project = host.project(window)?;
         // A notebook cell is a language-server document only: no plugin navigates in it.
@@ -379,23 +378,8 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
     definition_targets(result, found, in_string)
 }
 
-/// Whether the syntax tree puts the identifier at `pos` as a declaration's name (`int f()`'s `f`).
-async fn on_declaration_name(host: &Host, window: &str, doc: DocId, pos: Pos) -> bool {
-    let Ok(project) = host.project(window) else { return false };
-    blocking(move || {
-        let snap = project.documents.text_snapshot(doc)?;
-        if snap.large {
-            return Ok(false);
-        }
-        let s = ide_syntax::Snapshot::doc(doc, snap.version, &snap.language, &snap.text);
-        let cancel = ide_core::CancellationToken::new();
-        let Ok(Some(at)) = project.structure.node_at(&s, Range::new(pos, pos), &cancel) else { return Ok(false) };
-        Ok(is_declaration_name(&at))
-    })
-    .await
-    .unwrap_or(false)
-}
-
+/// Whether the syntax tree puts the identifier at `at` as a declaration's name (`int f()`'s `f`).
+#[cfg(test)]
 fn is_declaration_name(at: &ide_syntax::NodeAt) -> bool {
     at.node.field.as_deref() == Some("name")
         && at.ancestors.first().is_some_and(|parent| {
