@@ -549,7 +549,6 @@ export const GUTTER_ICON_GROUPS = [
   { id: "bookmarks" },
   { id: "inheritors" },
   { id: "supers" },
-  { id: "mybatis" },
   { id: "colors" },
 ] as const;
 

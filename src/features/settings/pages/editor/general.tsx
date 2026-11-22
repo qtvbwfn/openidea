@@ -696,7 +696,6 @@ const GUTTER_OPTIONS: ReadonlyArray<{ id: string; label: string; icon?: IconName
     icon: "gutter-implementing",
     keywords: ["Implementing and overriding", "super method", "overrides", "implements"],
   },
-  { id: "mybatis", label: "MyBatis mapper statements", keywords: ["mybatis", "mapper", "xml statement"] },
   { id: "colors", label: "Color preview", keywords: ["color", "swatch", "colour"] },
 ];
 

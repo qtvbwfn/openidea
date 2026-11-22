@@ -26,7 +26,6 @@ import { appendStatementEdit, importEdit, mapperXmlContent, paramAnnotationEdits
 import { inType, methodAt, parseMapperInterface, type MapperInterface, type MapperMethod } from "./javaParse";
 import { parseMapperXml } from "./xmlParse";
 import { configuredXmlDirs, ensureMapperIndex, patchMapperIndex, type XmlEntry } from "./xmlIndex";
-import { refreshMybatisGutters } from "./gutter";
 
 // ---------------------------------------------------------------------------
 // Targets
@@ -130,10 +129,9 @@ async function appendStatement(path: string, stmt: string): Promise<boolean> {
     scrollIntoView: true,
     userEvent: "input",
   });
-  // The edit may be unsaved: merge it into the cached index and refresh the
-  // gutters, so the Java mapper picks the new statement up at once.
+  // The edit may be unsaved: merge it into the cached index, so the other
+  // generation intentions see the new statement at once.
   patchMapperIndex(path, view.state.doc.toString());
-  refreshMybatisGutters();
   return true;
 }
 
@@ -146,7 +144,6 @@ async function createMapperXml(path: string, iface: MapperInterface): Promise<vo
   // blanks every mapper intention (jump / generate / create) right after the
   // very flow that was expected to enable them.
   patchMapperIndex(path, content);
-  refreshMybatisGutters();
   await editorService().openFile(path, { focus: true });
 }
 
