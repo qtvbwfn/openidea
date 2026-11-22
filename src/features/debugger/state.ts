@@ -309,7 +309,9 @@ function ownSession(id: DebugSessionId, event: DebugEvent): DebugSession | null 
   const st = useDebug.getState();
   const existing = st.sessions[id];
   if (existing) return existing;
-  if (owned.has(id)) return null;
+  // `started` is a session's first event, sent once when the backend creates it: never a late event
+  // of a forgotten session, though its id may be one (another backend numbers from 1 again).
+  if (owned.has(id) && event.kind !== "started") return null;
   if (event.kind === "started" && event.parent != null) {
     if (!st.sessions[event.parent]) return null;
     return adoptSession(id, { name: event.name, adapter: event.adapter, parent: event.parent });
@@ -1438,7 +1440,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       void loadFrames(id, event.threadId, !markTraceStop(id, event.threadId, s.stops + 1));
       const dbg = workflowSettings().debugger;
       try {
-// A session debugged in place from Services shows its debugger there (#4773);
+        // A session debugged in place from Services shows its debugger there (#4773);
         // other Services-owned sessions stay out of the Debug window.
         if (dbg.showOnBreakpoint) {
           const root = rootOf(s);
