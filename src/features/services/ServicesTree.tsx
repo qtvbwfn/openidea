@@ -260,48 +260,48 @@ export function ServicesTreeView() {
                   getChildren={(n) => n.children}
                   isExpandable={(n) => !!n.children?.length || !!n.expandable}
                   expanded={expanded}
-                onExpandedChange={(next, node, open) => {
-                  useServicesTree.setState({ expanded: next });
-                  providers.find((p) => p.id === index.get(node.key)?.provider)?.expand?.(node, open);
-                }}
-                selected={selectedKeys}
-                onSelectionChange={(keys, lead) => {
-                  const selectedKey = keys.size ? (lead?.key ?? null) : null;
-                  const changed = selectedKey !== useServicesTree.getState().selectedKey;
-                  useServicesTree.setState({ selectedKeys: keys, selectedKey });
-                  if (lead && changed) providers.find((p) => p.id === index.get(lead.key)?.provider)?.select?.(lead);
-                }}
-                renderNode={(n, state) => <Row item={n} state={state} />}
-                onActivate={(n) => {
-                  const p = index.get(n.key);
-                  providers.find((x) => x.id === p?.provider)?.activate?.(n);
-                }}
-                onJumpToSource={(n) => {
-                  const p = providers.find((x) => x.id === index.get(n.key)?.provider);
-                  if (p?.jumpToSource) p.jumpToSource(n);
-                  else p?.activate?.(n);
-                }}
-                onContextMenu={(n, keys, e) => {
-                  e.preventDefault();
-                  if (!n) {
-                    showContextMenu({ x: e.clientX, y: e.clientY }, addServiceMenu(providers));
-                    return;
-                  }
-                  useServicesTree.setState({ selectedKeys: keys, selectedKey: n.key });
-                  const items = selectionMenu(selectedServices(keys, index), providers);
-                  const moves = keys.size === 1 ? moveActions(n) : [];
-                  if (moves.length)
-                    items.push(
-                      { kind: "separator" },
-                      ...moves.map((a) => ({ label: a.title, icon: a.icon, disabled: a.disabled, run: a.run })),
-                    );
+                  onExpandedChange={(next, node, open) => {
+                    useServicesTree.setState({ expanded: next });
+                    providers.find((p) => p.id === index.get(node.key)?.provider)?.expand?.(node, open);
+                  }}
+                  selected={selectedKeys}
+                  onSelectionChange={(keys, lead) => {
+                    const selectedKey = keys.size ? (lead?.key ?? null) : null;
+                    const changed = selectedKey !== useServicesTree.getState().selectedKey;
+                    useServicesTree.setState({ selectedKeys: keys, selectedKey });
+                    if (lead && changed) providers.find((p) => p.id === index.get(lead.key)?.provider)?.select?.(lead);
+                  }}
+                  renderNode={(n, state) => <Row item={n} state={state} />}
+                  onActivate={(n) => {
+                    const p = index.get(n.key);
+                    providers.find((x) => x.id === p?.provider)?.activate?.(n);
+                  }}
+                  onJumpToSource={(n) => {
+                    const p = providers.find((x) => x.id === index.get(n.key)?.provider);
+                    if (p?.jumpToSource) p.jumpToSource(n);
+                    else p?.activate?.(n);
+                  }}
+                  onContextMenu={(n, keys, e) => {
+                    e.preventDefault();
+                    if (!n) {
+                      showContextMenu({ x: e.clientX, y: e.clientY }, addServiceMenu(providers));
+                      return;
+                    }
+                    useServicesTree.setState({ selectedKeys: keys, selectedKey: n.key });
+                    const items = selectionMenu(selectedServices(keys, index), providers);
+                    const moves = keys.size === 1 ? moveActions(n) : [];
+                    if (moves.length)
+                      items.push(
+                        { kind: "separator" },
+                        ...moves.map((a) => ({ label: a.title, icon: a.icon, disabled: a.disabled, run: a.run })),
+                      );
 
-                  if (items.length) showContextMenu({ x: e.clientX, y: e.clientY }, items);
-                }}
-                speedSearch
-                aria-label="Services"
-                className={styles.tree}
-              />
+                    if (items.length) showContextMenu({ x: e.clientX, y: e.clientY }, items);
+                  }}
+                  speedSearch
+                  aria-label="Services"
+                  className={styles.tree}
+                />
               </div>
             </div>
           </SplitPanel>
