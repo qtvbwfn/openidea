@@ -96,9 +96,6 @@ zip = { version = "9.2.3", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
 
-# platform & locale
-sys-locale = "0.3"
-
 # search, index, language
 grep-searcher = "0.1"
 grep-regex = "0.1"

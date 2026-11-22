@@ -156,14 +156,9 @@ impl Host {
         // Every sink the host hands out records diagnostics into the shared store first.
         let diagnostics: Arc<diagnostics_store::DiagnosticsStore> = Arc::default();
         let sink_for: SinkFactory = diagnostics_store::recording_sink_factory(diagnostics.clone(), sink_for);
+        // The system UI language is seeded into a fresh profile by the shell
+        // (`ide_workspace::settings::initialize_global_locale`), before this host is built.
         let global_settings = SettingsStore::load(&config_dir, None);
-        // First launch: adopt the OS language as the default UI language (`zh` on
-        // Simplified Chinese systems) and persist it; an explicit choice in
-        // Settings wins from then on. A broken settings file must not keep the
-        // IDE from starting, so adoption failures are logged, not fatal.
-        if let Err(e) = global_settings.adopt_system_locale() {
-            tracing::warn!("cannot adopt the system UI language: {e}");
-        }
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
