@@ -60,7 +60,21 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   await editor.locator(".cm-line", { hasText: "return order.toDto()" }).click();
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
-  await page.keyboard.type("order.");
+  await page.keyboard.type("order");
+  const firstPlacement = await page.evaluateHandle(() => {
+    const sample: { labelX?: number } = {};
+    const observer = new MutationObserver(() => {
+      const label = document.querySelector(
+        ":is(.cm-tooltip-above, .cm-tooltip-below).cm-lsp-completion .cm-completionLabel",
+      );
+      if (!label) return;
+      sample.labelX = label.getBoundingClientRect().left;
+      observer.disconnect();
+    });
+    observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["class"] });
+    return sample;
+  });
+  await page.keyboard.type(".");
   await page.keyboard.press("Control+Space");
   const popup = page.locator(".cm-tooltip-autocomplete");
   await expect(popup.getByText("total", { exact: true })).toBeVisible();
@@ -83,6 +97,8 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   });
   const label = await method.locator(".cm-completionLabel").boundingBox();
   // Subpixel rounding differs per platform/font; a mis-set inset is a whole icon column off.
+  const firstLabelX = await firstPlacement.evaluate((sample) => sample.labelX!);
+  expect(Math.abs(firstLabelX - wordStart)).toBeLessThanOrEqual(2);
   expect(Math.abs(label!.x - wordStart)).toBeLessThanOrEqual(2);
   const zoomedSize = await editor.locator(".cm-content").evaluate(async (content) => {
     const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
@@ -178,6 +194,68 @@ test("long completion signatures fit the editor when the workbench is narrowed",
   await page.keyboard.press("Enter");
   await expect(popup).toBeHidden();
   await expect(editor.locator(".cm-activeLine")).toContainText(`order.${label}()`);
+});
+
+test("completion clips long parameters before the suggestion name and return type", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1120, height: 760 });
+  const editor = await openSample(page);
+  const label = "reconcilePendingOrdersByRegion";
+  const returnType = "RegionalSettlementResult";
+  await page.evaluate(
+    ({ label, returnType }) => {
+      const labelDetail =
+        "(pendingOrders: ReadonlyArray<PendingOrder>, reconciliationOptions: RegionalReconciliationOptions)";
+      const item: CompletionItem = {
+        label,
+        labelDetail,
+        labelDescription: returnType,
+        detail: null,
+        kind: "method",
+        documentation: null,
+        sortText: null,
+        filterText: null,
+        preselect: true,
+        deprecated: false,
+        insertText: `${label}()`,
+        isSnippet: false,
+        replaceRange: null,
+        replaceRangeTab: null,
+        additionalEdits: [],
+        commitCharacters: [],
+        command: null,
+        data: null,
+        server: 1,
+      };
+      window.__ipc.handlers.lsp_completion = () => ({ isIncomplete: false, items: [item] });
+    },
+    { label, returnType },
+  );
+  await editor.locator(".cm-line", { hasText: "return order.toDto()" }).click();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("order.");
+  await page.keyboard.press("Control+Space");
+
+  const popup = page.locator(".cm-tooltip-autocomplete");
+  const row = popup.getByRole("option").filter({
+    has: page.locator(".cm-completionLabel", { hasText: label }),
+  });
+  await expect(row.locator(".cm-lsp-type")).toHaveText(returnType);
+  await page.setViewportSize({ width: 820, height: 760 });
+  await expect
+    .poll(() =>
+      row.evaluate((el) => {
+        const name = el.querySelector<HTMLElement>(".cm-completionLabel")!;
+        const parameters = el.querySelector<HTMLElement>(".cm-completionDetail")!;
+        const type = el.querySelector<HTMLElement>(".cm-lsp-type")!;
+        return {
+          nameFits: name.scrollWidth <= name.clientWidth + 1,
+          typeFits: type.scrollWidth <= type.clientWidth + 1,
+          parametersClipped: parameters.scrollWidth > parameters.clientWidth,
+        };
+      }),
+    )
+    .toEqual({ nameFits: true, typeFits: true, parametersClipped: true });
 });
 
 test("documentation shows beside the lookup instead of being clipped by it", async ({ workbench: page }, info) => {
