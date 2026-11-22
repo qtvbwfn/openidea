@@ -17,6 +17,9 @@ const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 /// snapshot without them must not warm-start a fork build, whose find-usages
 /// map would come up empty. 8-fork: upstream 4's symbol base names on top.
 const SCHEMA: &str = "openidea-index-8-fork";
+/// redb's page cache, which otherwise grows to 1 GiB. Queries run on the in-memory snapshot;
+/// the database is read once at startup and written incrementally.
+const DB_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 /// The real Git directory for a checkout/worktree (`root/.git` may be a file
 /// containing `gitdir: ...`).
@@ -450,7 +453,7 @@ impl Store {
 
     fn open_db(&self) -> Result<Database> {
         let file = self.snapshot.with_file_name("index.redb");
-        let db = match Database::create(&file) {
+        let db = match Database::builder().set_cache_size(DB_CACHE_BYTES).create(&file) {
             Ok(db) => db,
             Err(redb::DatabaseError::DatabaseAlreadyOpen) => {
                 return Err(format!("{} is in use", file.display()));
@@ -459,7 +462,7 @@ impl Store {
                 tracing::warn!("index cache {} unreadable ({e}); rebuilding", file.display());
                 let _ = std::fs::remove_file(&file);
                 let _ = std::fs::remove_file(&self.snapshot);
-                Database::create(&file).map_err(err)?
+                Database::builder().set_cache_size(DB_CACHE_BYTES).create(&file).map_err(err)?
             }
         };
         let valid = {

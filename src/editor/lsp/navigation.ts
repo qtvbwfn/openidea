@@ -51,11 +51,11 @@ import {
   whenSynced,
   type ContributedDefinition,
   type EditorDocContext,
+  openCodeLocation,
 } from "@/editor/api";
 import { structure } from "@/editor/structure";
 import { executeAction } from "@/platform/actions";
 import { basename, relativePath, useProject } from "@/platform/project";
-import { editorService } from "@/workbench/contributions";
 import { fileIconName } from "@/ui";
 import { NO_SERVER, debounce, docOf, isUnavailable, lspDoc, lspRequest, reportLspError } from "./lsp";
 import { offsetToPos, rangeContains, rangeToOffsets } from "./positions";
@@ -83,6 +83,7 @@ import {
   textReference,
 } from "./links";
 import { featureBackoff } from "./availability";
+import { navigationStarted } from "./foreground";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { enclosingType } from "@/editor/navigation/lineMarkers";
@@ -108,10 +109,7 @@ import {
 const highlightsBackoff = featureBackoff();
 
 export async function navigateTo(loc: Location) {
-  await editorService().openFile(loc.path, {
-    selection: { line: loc.range.start.line, col: loc.range.start.col },
-    focus: true,
-  });
+  await openCodeLocation(loc.path, { line: loc.range.start.line, col: loc.range.start.col });
 }
 
 const NOT_FOUND: Record<GotoKind, string> = {
@@ -210,7 +208,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
   return rows.map(({ l, where, label, container, indexSymbol }, i) => ({
     id: `${i}`,
     label: byContainer ? container! : label,
-    detail: (byContainer ? [where] : [container, where]).filter(Boolean).join(" · "),
+    target: { container: byContainer ? null : container, path: where },
     ...(indexSymbol ? { symbol: l.kind! } : { icon: fileIconName(basename(l.path), l.path) }),
     location: { path: l.path, line: l.range.start.line },
     run: () => navigateTo(l),
@@ -356,9 +354,11 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   // can take as long as the server's answer.
   const done = showPendingHint(view, tx`Finding navigation target…`);
   pendingGestureHints.set(view, done);
+  const navigated = navigationStarted();
   try {
     await gotoResolved(view, kind, at ?? view.state.selection.main.head, superseded, done);
   } finally {
+    navigated();
     done();
     if (pendingGestureHints.get(view) === done) pendingGestureHints.delete(view);
   }
@@ -387,6 +387,20 @@ async function pythonImplementations(doc: EditorDocContext, pos: Pos): Promise<D
   const hierarchy = await projectPythonHierarchy().catch(() => null);
   if (!hierarchy) return [];
   return pythonImplementationTargets(hierarchy, doc.path, pos, outline).catch(() => []);
+}
+
+/**
+ * Asks for the declaration at `offset`, dropping the target under the caret. Called when Go to
+ * Implementation finds nothing: the jump then ends on the declaration, as in IDEA.
+ */
+async function implementationFallbackTargets(
+  view: EditorView,
+  offset: number,
+  path: string,
+  pos: Pos,
+): Promise<readonly DeclarationTarget[]> {
+  const declaration = await requestNavigation(view, offset, "definition").catch(() => []);
+  return declaration.filter((l) => !isSelfTarget([l], path, pos));
 }
 
 /** Whether `line` (0-based) of `text` is an import statement. */
@@ -515,7 +529,17 @@ async function gotoResolved(
     const graph = graphTargets ? await graphTargets : [];
     if (superseded()) return;
     if (graph.length) locs = graph;
-    else if (isCancelled(e) || !declaration) {
+    else if (kind === "implementation" && !isCancelled(e) && !isUnavailable(e)) {
+      // Some servers fail the request instead of answering empty (gopls: "no interfaces
+      // implemented by this method"). Treat that as a search that found nothing, not a broken server.
+      const declarationTargets = await implementationFallbackTargets(view, offset, doc.path, pos);
+      if (superseded()) return;
+      if (!declarationTargets.length) {
+        reportLspError(view, e, true);
+        return;
+      }
+      locs = dedupeLocations(declarationTargets);
+    } else if (isCancelled(e) || !declaration) {
       reportLspError(view, e, true);
       return;
     } else {
@@ -548,6 +572,12 @@ async function gotoResolved(
     return;
   }
   if (superseded()) return;
+  // Outside `gotoAfterEdits`, whose retries would repeat the extra request.
+  if (!locs.length && kind === "implementation" && !serverDown) {
+    const declarationTargets = await implementationFallbackTargets(view, offset, doc.path, pos);
+    if (superseded()) return;
+    locs = dedupeLocations(declarationTargets);
+  }
   if (!locs.length) {
     // The server has no definition here: a link (`href`, `#include`, Markdown) or a file path.
     if (
@@ -558,6 +588,13 @@ async function gotoResolved(
     )
       return;
     if (superseded()) return;
+// ⌘B on a declaration's own name shows its usages also when the server has no definition
+    // there instead of answering the declaration itself (kotlin-language-server).
+    if (kind === "definition" && !fromSyntax && (await onDeclarationName(view, offset))) {
+      if (superseded()) return;
+      if (!(await executeAction("find.showUsages"))) showHint(view, "No usages found");
+      return;
+    }
     // The server found nothing, but the import chain may still resolve (relative,
     // tsconfig/vite aliases, re-exports) — vue included. No locals heuristic here: an
     // empty server answer stays authoritative about the code it analyses; the name
