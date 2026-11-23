@@ -56,7 +56,7 @@ import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
 import { hotReload, hotRestart, supportsHotReload } from "./flutterHotReload";
-import { configIcon, isJvmKind } from "./configs";
+import { configIcon } from "./configs";
 import { agentName } from "./agentConfig";
 import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
 import styles from "./Run.module.css";
@@ -221,7 +221,6 @@ export function SessionPanel({
           findOpen={findOpen}
           onFindOpenChange={setFindOpen}
           cwd={cwd}
-          mybatisSql={isJvmKind(session.config.kind)}
           onClear={() => clearConsole(session.id)}
           input={
             !testModel && acceptsInput(session)

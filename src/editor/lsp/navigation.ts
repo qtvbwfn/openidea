@@ -647,7 +647,7 @@ async function gotoResolved(
     return;
   }
   // IDEA: ⌘B on a declaration shows its usages — also when a plugin adds targets of its own,
-  // such as a MyBatis mapper method's XML statement (#1745), which its gutter icon still reaches.
+  // such as a MyBatis mapper method's XML statement (#1745), reached through the plugin's index.
   if (kind === "definition" && locs.some((l) => isSelfTarget([l], doc.path, pos))) {
     // An imported name is not the declaration it means: when the server points at the import
     // itself (it analyses one root and cannot see the dependency project), the import names

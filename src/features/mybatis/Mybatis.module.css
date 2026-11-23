@@ -1,7 +1,0 @@
-/* The target path in the Create Mapper XML dialog. */
-.path {
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
-  word-break: break-all;
-  opacity: 0.75;
-}
