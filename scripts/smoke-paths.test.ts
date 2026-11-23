@@ -22,16 +22,18 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 describe("the Language smoke workflow", () => {
   const workflow = readWorkflow(repo);
 
+  // Tracing the import closure reads the whole frontend: the 5s default budget
+  // is spent on an idle machine already (4.4s), and a loaded suite exceeds it.
   it("runs every language when a file the frontend smoke loads changes", async () => {
     const { files, problems } = await smokeInputs(repo, workflow);
     expect(problems).toEqual([]);
     expect(describeUnselected(await unselected(workflow, [...files.keys()]), files)).toBe("");
-  });
+  }, 20_000);
 
   it("runs every language when a crate the smoke runs changes", async () => {
     const crates = rustSmokeInputs(repo);
     expect(describeUnselected(await unselected(workflow, [...crates.keys()]), crates)).toBe("");
-  });
+  }, 20_000);
 });
 
 const dirs: string[] = [];

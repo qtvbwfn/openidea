@@ -206,7 +206,10 @@ const inlay = (id: string) => document.querySelector<HTMLElement>(`[data-thread-
 describe("review threads in a pull request diff", () => {
   it("shows threads as compact inlays under their lines, filtered by Show Review Threads", async () => {
     view();
-    await waitFor(() => expect(inlay("T1")).not.toBeNull());
+    // The inlays mount in effects: on a loaded suite they take past waitFor's
+    // 1s default, so every wait in this test carries its own budget.
+    const timeout = { timeout: 5_000 };
+    await waitFor(() => expect(inlay("T1")).not.toBeNull(), timeout);
     const t1 = inlay("T1")!;
     // More than 3 comments: the first, "… 2 more replies", the last.
     expect(t1.textContent).toContain("first");
@@ -219,13 +222,13 @@ describe("review threads in a pull request diff", () => {
     expect(t1.closest(".cm-lineInlay")!.previousElementSibling?.textContent).toBe("line three");
     expect(right.querySelectorAll(".cm-reviewControl-toggle")).toHaveLength(2);
     // Each thread's inlay mounts in its own effect, so T2 may land a tick after T1.
-    await waitFor(() => expect(inlay("T2")).not.toBeNull());
+    await waitFor(() => expect(inlay("T2")).not.toBeNull(), timeout);
 
     act(() => setReviewDiffSettings({ threadsView: "unresolved" }));
-    await waitFor(() => expect(inlay("T2")).toBeNull());
+    await waitFor(() => expect(inlay("T2")).toBeNull(), timeout);
     expect(inlay("T1")).not.toBeNull();
     act(() => setReviewDiffSettings({ threadsView: "none" }));
-    await waitFor(() => expect(inlay("T1")).toBeNull());
+    await waitFor(() => expect(inlay("T1")).toBeNull(), timeout);
   });
 
   it("follows the threads when the data reloads", async () => {
